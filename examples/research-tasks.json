@@ -1,0 +1,14 @@
+[
+  {
+    "prompt": "Analyze the project structure of this repository and list all source files with their purposes.",
+    "role": "researcher"
+  },
+  {
+    "prompt": "Review the TypeScript types in src/types.ts and suggest any improvements or missing types.",
+    "role": "reviewer"
+  },
+  {
+    "prompt": "Write a comprehensive README.md for this project explaining what gemini-swarm does and how to use it.",
+    "role": "coder"
+  }
+]

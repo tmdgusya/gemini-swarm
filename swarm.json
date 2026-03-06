@@ -1,0 +1,5 @@
+{
+  "maxAgents": 5,
+  "useWorktrees": false,
+  "timeout": 300000
+}
