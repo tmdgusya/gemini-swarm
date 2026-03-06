@@ -1,13 +1,25 @@
 import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Message, MessageType } from './types.js';
+
+export type MessageType = 'task' | 'result' | 'info' | 'error' | 'heartbeat';
+
+export interface Message {
+  id: string;
+  from: string;
+  to: string;
+  type: MessageType;
+  payload: unknown;
+  timestamp: string;
+}
+
+const WORK_DIR = '/tmp/gemini-swarm';
 
 export class MessageBus {
   private inboxDir: string;
   private offsets: Map<string, number> = new Map();
 
-  constructor(workDir: string) {
+  constructor(workDir: string = WORK_DIR) {
     this.inboxDir = join(workDir, 'inbox');
     mkdirSync(this.inboxDir, { recursive: true });
   }

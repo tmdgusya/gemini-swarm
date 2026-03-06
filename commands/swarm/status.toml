@@ -1,0 +1,5 @@
+description = "Show status of all swarm agents"
+prompt = """
+Call the `swarm_status` tool to get the current status of all swarm agents.
+Present the results as a clear table showing each agent's name, role, status, and current task.
+"""

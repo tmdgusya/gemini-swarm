@@ -1,0 +1,5 @@
+description = "Stop swarm agents"
+prompt = """
+Call the `swarm_kill` tool to stop swarm agents.
+If the user specified an agent name in {{args}}, pass it. Otherwise kill all.
+"""

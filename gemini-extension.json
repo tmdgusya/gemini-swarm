@@ -1,0 +1,12 @@
+{
+  "name": "gemini-swarm",
+  "version": "0.1.0",
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "gemini-swarm": {
+      "command": "node",
+      "args": ["dist/server.js"],
+      "cwd": "${extensionPath}"
+    }
+  }
+}

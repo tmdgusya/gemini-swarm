@@ -1,0 +1,15 @@
+description = "Dispatch N parallel Gemini agents to work on a task"
+prompt = """
+The user wants to dispatch a swarm of agents. Parse their request: {{args}}
+
+Extract:
+1. The number of agents (first number found, default 3)
+2. The task/prompt for the agents (everything after the number)
+
+Then call the `swarm_dispatch` tool with:
+- count: the number of agents
+- prompt: the task description
+- role: infer from context (researcher/coder/reviewer/generalist)
+
+After dispatching, summarize what was launched.
+"""

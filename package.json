@@ -1,22 +1,17 @@
 {
   "name": "gemini-swarm",
   "version": "0.1.0",
-  "description": "Gemini CLI swarm mode orchestrator",
+  "description": "Gemini CLI swarm mode extension — tmux + JSONL based",
   "type": "module",
-  "bin": {
-    "gemini-swarm": "./bin/gemini-swarm.js",
-    "gs": "./bin/gemini-swarm.js"
-  },
   "scripts": {
-    "start": "tsx src/cli.ts",
-    "test": "tsx --test src/tests/*.test.ts",
     "build": "tsc",
-    "prepublishOnly": "npm run build",
-    "swarm": "tsx src/cli.ts"
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
   },
   "devDependencies": {
-    "@types/node": "^25.3.5",
-    "tsx": "^4.21.0",
+    "@types/node": "^22.0.0",
     "typescript": "^5.9.3"
   }
 }

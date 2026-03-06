@@ -1,0 +1,6 @@
+description = "Collect and display results from swarm agents"
+prompt = """
+Call the `swarm_results` tool to collect results from completed swarm agents.
+{{args}}
+Synthesize and present the findings in a structured format.
+"""
