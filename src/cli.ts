@@ -93,9 +93,9 @@ function printUsage(): void {
 gemini-swarm — orchestrate parallel Gemini CLI agents
 
 Usage:
-  npx tsx src/cli.ts <tasks.json>              Load tasks from JSON file
-  npx tsx src/cli.ts --fan-out <prompts.json>  Fan-out: one researcher task per prompt
-  npx tsx src/cli.ts --prompt "question" -n 3  Create N generalist tasks with same prompt
+  gs <tasks.json>              Load tasks from JSON file
+  gs --fan-out <prompts.json>  Fan-out: one researcher task per prompt
+  gs --prompt "question" -n 3  Create N generalist tasks with same prompt
 
 Options:
   --config <path>       Path to swarm.json config file

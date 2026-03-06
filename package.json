@@ -4,12 +4,14 @@
   "description": "Gemini CLI swarm mode orchestrator",
   "type": "module",
   "bin": {
-    "gemini-swarm": "./bin/gemini-swarm.js"
+    "gemini-swarm": "./bin/gemini-swarm.js",
+    "gs": "./bin/gemini-swarm.js"
   },
   "scripts": {
     "start": "tsx src/cli.ts",
     "test": "tsx --test src/tests/*.test.ts",
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "swarm": "tsx src/cli.ts"
   },
   "devDependencies": {
