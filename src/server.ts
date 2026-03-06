@@ -7,7 +7,15 @@ import {
 import { TmuxSpawner, type StreamEvent } from './tmux-spawner.js';
 import { AgentTracker, type AgentRole } from './agent-tracker.js';
 import { MessageBus } from './message-bus.js';
-import { rmSync, readFileSync } from 'node:fs';
+import { rmSync, readFileSync, existsSync } from 'node:fs';
+import {
+  parsePlan,
+  updateTaskStatus,
+  findNextPendingPhase,
+  getPendingTasks,
+  type PlanTask,
+  type PlanPhase,
+} from './plan-parser.js';
 
 const WORK_DIR = '/tmp/gemini-swarm';
 
@@ -78,6 +86,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: 'swarm_plan_execute',
+      description:
+        'Execute a structured plan phase-by-phase. Dispatches all tasks in the current phase as parallel agents, waits for completion, updates plan.md status markers, and returns. Call this once per phase — it returns after each phase for a verification checkpoint.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          planDir: {
+            type: 'string',
+            description: 'Path to the plan directory containing plan.md and spec.md (e.g. swarm/plans/oauth_20260307)',
+          },
+          resumePhase: {
+            type: 'number',
+            description: 'Phase number to resume from (1-indexed). If omitted, starts from the first pending phase.',
+          },
+          retryTasks: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Task IDs to retry (e.g. ["1.2"]). Only dispatches these tasks.',
+          },
+          skipTasks: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Task IDs to skip (marks as completed with "skipped" note).',
+          },
+        },
+        required: ['planDir'],
+      },
+    },
   ],
 }));
 
@@ -96,6 +133,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return handleSend(args as { to: string; message: string });
     case 'swarm_kill':
       return handleKill(args as { agent?: string });
+    case 'swarm_plan_execute':
+      return handlePlanExecute(args as {
+        planDir: string;
+        resumePhase?: number;
+        retryTasks?: string[];
+        skipTasks?: string[];
+      });
     default:
       return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
   }
@@ -318,6 +362,274 @@ async function handleKill(args: { agent?: string }) {
   }
 
   return { content: [{ type: 'text' as const, text: JSON.stringify({ killed }) }] };
+}
+
+// --- Plan Execution ---
+
+async function handlePlanExecute(args: {
+  planDir: string;
+  resumePhase?: number;
+  retryTasks?: string[];
+  skipTasks?: string[];
+}) {
+  const planPath = `${args.planDir}/plan.md`;
+  const specPath = `${args.planDir}/spec.md`;
+
+  if (!existsSync(planPath)) {
+    return {
+      content: [{ type: 'text' as const, text: `Plan not found: ${planPath}` }],
+      isError: true,
+    };
+  }
+
+  const planContent = readFileSync(planPath, 'utf-8');
+  const plan = parsePlan(planContent);
+
+  const targetPhaseNum = args.resumePhase ?? findNextPendingPhase(plan);
+  if (targetPhaseNum === null) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ status: 'plan_complete', title: plan.title, totalPhases: plan.phases.length }),
+      }],
+    };
+  }
+
+  const phase = plan.phases.find(p => p.number === targetPhaseNum);
+  if (!phase) {
+    return {
+      content: [{ type: 'text' as const, text: `Phase ${targetPhaseNum} not found in plan` }],
+      isError: true,
+    };
+  }
+
+  if (args.skipTasks?.length) {
+    for (const taskId of args.skipTasks) {
+      updateTaskStatus(planPath, taskId, 'completed', 'skipped');
+    }
+  }
+
+  const freshPlan = parsePlan(readFileSync(planPath, 'utf-8'));
+  const freshPhase = freshPlan.phases.find(p => p.number === targetPhaseNum)!;
+  let tasks: PlanTask[];
+
+  if (args.retryTasks?.length) {
+    tasks = freshPhase.tasks.filter(t => args.retryTasks!.includes(t.id));
+  } else {
+    tasks = getPendingTasks(freshPhase);
+  }
+
+  if (tasks.length === 0) {
+    const nextPhase = findNextPendingPhase(freshPlan);
+    if (nextPhase === null) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ status: 'plan_complete', title: plan.title, totalPhases: plan.phases.length }),
+        }],
+      };
+    }
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          status: 'phase_already_complete',
+          phase: targetPhaseNum,
+          phaseName: freshPhase.name,
+          nextPhase: { phase: nextPhase, name: freshPlan.phases.find(p => p.number === nextPhase)?.name },
+        }),
+      }],
+    };
+  }
+
+  let spec = '';
+  try {
+    spec = readFileSync(specPath, 'utf-8');
+  } catch { /* spec is optional */ }
+
+  for (const task of tasks) {
+    updateTaskStatus(planPath, task.id, 'in_progress');
+  }
+
+  const cwd = process.cwd();
+  const startTime = Date.now();
+  const agentPromises: Array<{
+    task: PlanTask;
+    name: string;
+    promise: Promise<{ success: boolean; response?: string; error?: string }>;
+  }> = [];
+
+  for (const task of tasks) {
+    const agentName = `plan-${targetPhaseNum}-${task.id.replace('.', '-')}`;
+    const agentPrompt = buildAgentPrompt(task, spec, freshPhase);
+
+    const tmuxAgent = spawner.spawn({ name: agentName, prompt: agentPrompt, cwd });
+    tracker.register({
+      name: agentName,
+      role: 'coder',
+      prompt: agentPrompt,
+      paneId: tmuxAgent.paneId,
+      pid: tmuxAgent.pid,
+    });
+    tracker.updateStatus(agentName, 'running');
+
+    const promise = new Promise<{ success: boolean; response?: string; error?: string }>((resolve) => {
+      const outputFile = TmuxSpawner.outputPath(agentName);
+
+      if (spawner.tmuxAvailable) {
+        tmuxAgent.process.on('close', () => {
+          try {
+            const raw = readFileSync(outputFile, 'utf-8');
+            const events = TmuxSpawner.parseStreamEvents(raw);
+            const response = TmuxSpawner.extractResponse(events);
+            const errorEvent = events.find(e => e.type === 'error');
+
+            if (errorEvent) {
+              tracker.updateStatus(agentName, 'failed', { error: errorEvent.error ?? 'Unknown error', response });
+              resolve({ success: false, error: errorEvent.error ?? 'Unknown error', response });
+            } else if (response) {
+              tracker.updateStatus(agentName, 'completed', { response });
+              resolve({ success: true, response });
+            } else {
+              tracker.updateStatus(agentName, 'failed', { error: 'Agent exited without result' });
+              resolve({ success: false, error: 'Agent exited without result' });
+            }
+          } catch (err) {
+            tracker.updateStatus(agentName, 'failed', { error: `Output read error: ${err}` });
+            resolve({ success: false, error: `Output read error: ${err}` });
+          }
+          try { rmSync(outputFile, { force: true }); } catch { /* ignore */ }
+          spawner.removePaneEntry(agentName);
+        });
+      } else {
+        let stdout = '';
+        tmuxAgent.process.stdout?.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        tmuxAgent.process.on('close', () => {
+          const events = TmuxSpawner.parseStreamEvents(stdout);
+          const response = TmuxSpawner.extractResponse(events);
+          const errorEvent = events.find(e => e.type === 'error');
+
+          if (errorEvent) {
+            tracker.updateStatus(agentName, 'failed', { error: errorEvent.error ?? 'Unknown error', response });
+            resolve({ success: false, error: errorEvent.error ?? 'Unknown error', response });
+          } else if (response) {
+            tracker.updateStatus(agentName, 'completed', { response });
+            resolve({ success: true, response });
+          } else {
+            tracker.updateStatus(agentName, 'failed', { error: 'Agent exited without result' });
+            resolve({ success: false, error: 'Agent exited without result' });
+          }
+        });
+      }
+
+      tmuxAgent.process.on('error', (err) => {
+        tracker.updateStatus(agentName, 'failed', { error: err.message });
+        resolve({ success: false, error: err.message });
+      });
+    });
+
+    agentPromises.push({ task, name: agentName, promise });
+  }
+
+  spawner.applyTiledLayout();
+
+  const results = await Promise.all(
+    agentPromises.map(async ({ task, name, promise }) => {
+      const result = await promise;
+      return { taskId: task.id, taskDesc: task.description, agent: name, ...result };
+    })
+  );
+
+  const duration = Date.now() - startTime;
+
+  for (const result of results) {
+    if (result.success) {
+      updateTaskStatus(planPath, result.taskId, 'completed');
+    } else {
+      updateTaskStatus(planPath, result.taskId, 'failed');
+    }
+  }
+
+  const failed = results.filter(r => !r.success);
+  const completed = results.filter(r => r.success);
+
+  if (failed.length > 0) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          status: 'phase_failed',
+          phase: targetPhaseNum,
+          phaseName: freshPhase.name,
+          completedTasks: completed.map(r => ({
+            task: `Task ${r.taskId}: ${r.taskDesc}`,
+            agent: r.agent,
+          })),
+          failedTasks: failed.map(r => ({
+            task: `Task ${r.taskId}: ${r.taskDesc}`,
+            agent: r.agent,
+            error: r.error,
+          })),
+          duration,
+        }, null, 2),
+      }],
+    };
+  }
+
+  const updatedPlan = parsePlan(readFileSync(planPath, 'utf-8'));
+  const nextPhaseNum = findNextPendingPhase(updatedPlan);
+
+  if (nextPhaseNum !== null) {
+    const nextPhase = updatedPlan.phases.find(p => p.number === nextPhaseNum);
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          status: 'phase_complete',
+          phase: targetPhaseNum,
+          phaseName: freshPhase.name,
+          completedTasks: completed.map(r => ({
+            task: `Task ${r.taskId}: ${r.taskDesc}`,
+            agent: r.agent,
+            duration: tracker.getAgent(r.agent)?.durationMs,
+          })),
+          nextPhase: {
+            phase: nextPhaseNum,
+            name: nextPhase?.name,
+            taskCount: nextPhase?.tasks.length,
+          },
+          duration,
+        }, null, 2),
+      }],
+    };
+  }
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        status: 'plan_complete',
+        title: plan.title,
+        totalPhases: plan.phases.length,
+        totalTasks: plan.phases.reduce((sum, p) => sum + p.tasks.length, 0),
+        duration,
+      }, null, 2),
+    }],
+  };
+}
+
+function buildAgentPrompt(task: PlanTask, spec: string, phase: PlanPhase): string {
+  let prompt = `You are working on: ${task.description}\n\n## Context\nThis is Task ${task.id} in Phase "${phase.name}".\n`;
+
+  if (spec) {
+    prompt += `\n## Requirements\n${spec}\n`;
+  }
+
+  prompt += `\n## Instructions\n- Complete ONLY the task described above\n- Follow existing code conventions\n- Test your changes if applicable\n- Be thorough but focused on this specific task only\n- Do not modify files outside the scope of this task`;
+
+  return prompt;
 }
 
 // --- Start ---
