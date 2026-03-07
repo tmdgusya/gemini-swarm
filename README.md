@@ -59,6 +59,14 @@ Or step by step:
 
 This starts an interactive Q&A to generate a spec and phased plan, then executes each phase with parallel agents and verification checkpoints.
 
+### 4. Research-based execution
+
+```
+> /swarm:research "React 19 Server Components"
+```
+
+This starts an interactive Q&A to define the research scope, spawns `researcher` agents to gather information in parallel, and finally synthesizes all findings into a consolidated `report.md`.
+
 ## How It Works
 
 ```
@@ -123,6 +131,7 @@ Agents autonomously pull tasks from the TaskBoard (not pushed by the orchestrato
 ├── GEMINI.md                  # Context for Gemini (orchestrator + agent guide)
 ├── commands/swarm/            # Slash commands
 │   ├── plan.toml
+│   ├── research.toml
 │   ├── status.toml
 │   ├── results.toml
 │   └── kill.toml

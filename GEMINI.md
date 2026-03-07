@@ -95,6 +95,7 @@ Plans are stored in `swarm/plans/<plan_id>/` with:
 
 ## Slash Commands
 - `/swarm:plan <description>` — Structured decomposition and parallel execution
+- `/swarm:research <topic>` — Autonomous, parallelized research and synthesis
 - `/swarm:status` — Quick status check
 - `/swarm:results` — Collect results
 - `/swarm:kill` — Stop all agents

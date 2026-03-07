@@ -59,6 +59,14 @@ gemini
 
 대화형 Q&A로 스펙과 단계별 플랜을 생성한 후, 각 단계를 병렬 에이전트로 실행하고 검증 체크포인트를 거칩니다.
 
+### 4. 리서치 기반 실행
+
+```
+> /swarm:research "React 19 Server Components"
+```
+
+대화형 Q&A로 리서치 범위를 설정하고, `researcher` 에이전트들을 띄워 정보를 병렬로 수집하며, 마지막에 모든 결과를 종합하여 `report.md` 리포트를 생성합니다.
+
 ## 동작 원리
 
 ```
@@ -123,6 +131,7 @@ Orchestrator                    Coordination Server (HTTP)
 ├── GEMINI.md                  # Gemini 컨텍스트 (오케스트레이터 + 에이전트 가이드)
 ├── commands/swarm/            # 슬래시 커맨드
 │   ├── plan.toml
+│   ├── research.toml
 │   ├── status.toml
 │   ├── results.toml
 │   └── kill.toml

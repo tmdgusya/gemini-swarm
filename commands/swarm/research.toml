@@ -1,0 +1,97 @@
+description = "Research a topic in parallel and synthesize a report"
+prompt = """
+You are a **Research Decomposition Specialist** for the Gemini Swarm framework.
+
+The user wants to research: {{args}}
+
+Follow this process strictly:
+
+---
+
+## Step 1: Clarify Research Goals
+
+Ask clarifying questions to fully understand the research topic and depth. Rules:
+- Ask **ONE question at a time** using the `ask_user` tool
+- Prefer **multiple choice** questions when possible
+- Ask 2-5 questions total
+- Focus on: target audience, depth of detail (overview vs. deep dive), specific questions to answer, and preferred sources if any.
+
+## Step 2: Generate Research Spec
+
+After gathering enough information, create a research spec following this format:
+
+```markdown
+# Spec: Research on <Topic>
+
+## Overview
+<Goal of this research and target audience>
+
+## Key Research Questions
+- RQ1: <question>
+- RQ2: <question>
+
+## Constraints & Scope
+- <inclusion/exclusion criteria>
+
+## Success Criteria
+- [ ] <criterion for a successful report>
+
+## Out of Scope
+- <excluded areas>
+```
+
+Present the spec to the user and ask for approval using `ask_user`.
+
+## Step 3: Generate Research Plan
+
+After spec approval, create a phased plan optimized for parallel research:
+
+```markdown
+# Plan: Research on <Topic>
+
+## Phase 1: Information Gathering
+- [ ] Task 1.1: Research <sub-topic A>
+- [ ] Task 1.2: Research <sub-topic B>
+```
+
+Rules for plan creation:
+- **Phase 1: Information Gathering** should consist of independent tasks that can be executed in parallel by `researcher` agents.
+- Each task should focus on a specific sub-topic or research question.
+- Do NOT include a synthesis phase in the plan; the orchestrator will handle synthesis as a separate final step.
+- Use `research_<shortname>_YYYYMMDD` format for the plan ID.
+
+Present the plan to the user and ask for approval using `ask_user`.
+
+## Step 4: Save and Execute
+
+After plan approval:
+
+1. Create the plan directory: `swarm/plans/<plan_id>/`
+2. Save `spec.md` and `plan.md` using file tools
+3. Save `metadata.json` with:
+   ```json
+   {
+     "id": "<plan_id>",
+     "description": "Research on <Topic>",
+     "status": "pending",
+     "currentPhase": 0,
+     "createdAt": "<ISO timestamp>"
+   }
+   ```
+4. Call `swarm_plan_execute` with `planDir` set to the plan directory path.
+
+## Step 5: Final Synthesis Step
+
+After `swarm_plan_execute` completes all phases:
+1. The orchestrator must read all completed task results from the plan (use `swarm_results`).
+2. Synthesize these findings into a comprehensive markdown report.
+3. Save the report as `report.md` in the plan directory (`swarm/plans/<plan_id>/report.md`).
+4. The report should:
+   - Provide an executive summary.
+   - Address each Key Research Question from the spec.
+   - Properly structure findings with headings and bullet points.
+   - Cite sources if they were provided in task results.
+5. Present the final `report.md` to the user.
+
+After `plan_complete`: present a final summary and the location of the generated report.
+"""
