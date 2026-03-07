@@ -1,6 +1,6 @@
-# Gemini Swarm Extension
+# Gemini Swarm
 
-A Gemini CLI extension that spawns multiple Gemini agents in parallel via tmux panes. Dispatch a swarm of agents from your interactive Gemini session to tackle complex tasks concurrently.
+A Gemini CLI extension that orchestrates multiple Gemini agents as an autonomous team. Agents claim tasks from a shared TaskBoard, execute them in parallel, and report results — inspired by Claude Code's Agent Teams.
 
 ## Prerequisites
 
@@ -12,7 +12,11 @@ A Gemini CLI extension that spawns multiple Gemini agents in parallel via tmux p
 
 ## Installation
 
-The extension is already installed at `~/.gemini/extensions/gemini-swarm/`. Gemini CLI auto-discovers extensions in this directory.
+```bash
+gemini extensions install https://github.com/tmdgusya/gemini-swarm
+```
+
+No build step required — bundled with all dependencies.
 
 To verify:
 
@@ -21,152 +25,149 @@ gemini --list-extensions
 # Should show: gemini-swarm
 ```
 
-### Manual Build (if needed)
+## Quick Start
 
-```bash
-cd ~/.gemini/extensions/gemini-swarm
-npm install
-npm run build
-```
-
-## Usage
-
-### 1. Start a tmux session
+### 1. Start tmux and Gemini
 
 ```bash
 tmux
-```
-
-### 2. Launch Gemini interactive mode
-
-```bash
 gemini
 ```
 
-### 3. Use slash commands
-
-#### `/swarm:dispatch` — Spawn agents
+### 2. Create tasks and spawn agents
 
 ```
-> /swarm:dispatch 5 Analyze each module in this codebase and summarize its purpose
-
-> /swarm:dispatch 3 Review this code for security vulnerabilities
-
-> /swarm:dispatch 2 What are the pros and cons of this architecture?
+> Initialize the swarm, create 3 tasks for analyzing auth.ts, db.ts, and api.ts,
+  then spawn 3 agents to work on them.
 ```
 
-Format: `/swarm:dispatch <count> <prompt>`
-
-- `count` — Number of agents (1-10, default 3)
-- `prompt` — Task description for the agents
-
-After dispatching, tmux panes appear with each agent working:
+Or step by step:
 
 ```
-┌──────────────┬──────────────┐
-│ Main Session │  Agent #1    │
-│              │  (working..) │
-├──────────────┼──────────────┤
-│  Agent #2    │  Agent #3    │
-│  (working..) │  (done)      │
-└──────────────┴──────────────┘
+> swarm_init
+> swarm_create_tasks with tasks for each module analysis
+> swarm_spawn 3 agents
+> swarm_status
+> swarm_results
 ```
 
-#### `/swarm:status` — Check progress
+### 3. Plan-based execution (recommended for complex tasks)
 
 ```
-> /swarm:status
+> /swarm:plan Implement OAuth2 authentication with refresh tokens
 ```
 
-Shows a table of all agents with their name, role, status, elapsed time, and task.
-
-#### `/swarm:results` — Collect results
-
-```
-> /swarm:results
-```
-
-Gathers and synthesizes responses from all completed agents.
-
-#### `/swarm:kill` — Stop agents
-
-```
-> /swarm:kill          # Kill all agents
-> /swarm:kill agent-2  # Kill a specific agent
-```
-
-### 4. Direct tool calls
-
-You can also ask Gemini to use the tools directly in natural language:
-
-```
-> Spawn 3 agents to analyze the src/ directory
-
-> What's the status of my swarm agents?
-
-> Collect the results from the swarm
-
-> Send a message to agent-1 saying "focus on the API layer"
-
-> Kill all swarm agents
-```
-
-## MCP Tools Reference
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `swarm_dispatch` | `count`, `prompt`, `role?` | Spawn N agents in tmux panes |
-| `swarm_status` | — | Get status of all agents |
-| `swarm_results` | `task_id?` | Collect agent results |
-| `swarm_send` | `to`, `message` | Send message to an agent |
-| `swarm_kill` | `agent?` | Kill specific or all agents |
-
-### Roles
-
-- `generalist` (default) — General-purpose agent
-- `researcher` — Research and analysis focused
-- `coder` — Code writing and implementation
-- `reviewer` — Code review and quality checks
-
-## File Structure
-
-```
-~/.gemini/extensions/gemini-swarm/
-├── gemini-extension.json     # Extension manifest
-├── GEMINI.md                 # Context for Gemini (tool docs)
-├── commands/swarm/           # Slash commands
-│   ├── dispatch.toml
-│   ├── status.toml
-│   ├── results.toml
-│   └── kill.toml
-├── src/                      # TypeScript source
-│   ├── server.ts             # MCP server (5 tools)
-│   ├── tmux-spawner.ts       # tmux pane lifecycle
-│   ├── agent-tracker.ts      # Agent state tracking
-│   └── message-bus.ts        # JSONL IPC
-└── dist/                     # Compiled JS
-```
+This starts an interactive Q&A to generate a spec and phased plan, then executes each phase with parallel agents and verification checkpoints.
 
 ## How It Works
 
-1. `/swarm:dispatch` → TOML command injects prompt → Gemini calls `swarm_dispatch` MCP tool
-2. MCP server runs `tmux new-window` for each agent with `gemini -p "..." -y -o stream-json`
-3. Agent stdout is captured via named pipes (FIFO) for NDJSON stream parsing
-4. Agent tracker monitors completion and stores results to `/tmp/gemini-swarm/results/`
-5. `/swarm:status` and `/swarm:results` query the tracker for live updates
+```
+Orchestrator                    Coordination Server (HTTP)
+  │                                     │
+  ├─ swarm_init ──────────────────────► Start server
+  ├─ swarm_create_tasks ──────────────► TaskBoard: [task1, task2, task3]
+  ├─ swarm_spawn(3) ──────────────────► Spawn 3 Gemini CLI agents
+  │                                     │
+  │   ┌─── Agent 1 ◄───── task_list ────┤
+  │   │    claim("1") ─────────────────►│ task1: open → claimed
+  │   │    (working...)                 │
+  │   │    complete("1", result) ──────►│ task1: claimed → completed
+  │   │    task_list ──────────────────►│ no more tasks → exit
+  │   │                                │
+  │   ├─── Agent 2 ◄───── claim("2") ──┤ ...
+  │   └─── Agent 3 ◄───── claim("3") ──┤ ...
+  │                                     │
+  ├─ swarm_status ────────────────────► Summary of agents + tasks
+  └─ swarm_results ───────────────────► Completed task results
+```
+
+Agents autonomously pull tasks from the TaskBoard (not pushed by the orchestrator). If there are more tasks than agents, agents pick up remaining tasks after completing their first one.
+
+## MCP Tools
+
+### Orchestrator Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `swarm_init` | — | Start coordination server |
+| `swarm_create_tasks` | `tasks[]` | Create tasks on the TaskBoard |
+| `swarm_spawn` | `count`, `role?` | Spawn N agent processes |
+| `swarm_status` | — | Get agent and task status |
+| `swarm_results` | `task_id?` | Collect completed results |
+| `swarm_kill` | `agent?` | Kill specific or all agents |
+| `swarm_plan_execute` | `planDir`, `resumePhase?` | Execute plan phase-by-phase |
+
+### Agent Tools (used by spawned agents)
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `swarm_task_list` | — | List open tasks |
+| `swarm_task_claim` | `task_id` | Atomically claim a task |
+| `swarm_task_complete` | `task_id`, `result`, `sha?` | Report task completion |
+| `swarm_task_fail` | `task_id`, `error` | Report task failure |
+
+### Shared Tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `swarm_send` | `to`, `message` | Send message to another agent |
+| `swarm_receive` | — | Check message inbox |
+| `swarm_lock` / `swarm_unlock` | `resource` | File-level locking |
+| `swarm_heartbeat` | — | Agent alive signal |
+
+## Architecture
+
+```
+~/.gemini/extensions/gemini-swarm/
+├── gemini-extension.json      # Extension manifest
+├── GEMINI.md                  # Context for Gemini (orchestrator + agent guide)
+├── commands/swarm/            # Slash commands
+│   ├── plan.toml
+│   ├── status.toml
+│   ├── results.toml
+│   └── kill.toml
+├── src/                       # TypeScript source
+│   ├── server.ts              # MCP server (thin client → coord server)
+│   ├── coord-server.ts        # HTTP coordination server (TaskBoard, agents, messages, locks)
+│   ├── coord-client.ts        # HTTP client + auto-start
+│   ├── types.ts               # Shared types and API contract
+│   ├── tmux-spawner.ts        # tmux pane lifecycle
+│   ├── plan-parser.ts         # Plan.md parser
+│   └── lock-manager.ts        # File-based locking
+└── dist/                      # Bundled JS (esbuild, zero-install)
+    ├── server.js              # MCP entry point
+    └── coord-server.js        # Coordination server
+```
+
+### Key Design Decisions
+
+- **Pull model**: Agents claim tasks from a shared TaskBoard, not assigned by the orchestrator
+- **HTTP coordination**: All agents connect to the same localhost HTTP server for shared state
+- **Auto-start**: The coordination server starts automatically on first tool call
+- **Heartbeat + auto-release**: Dead agents' tasks are released back to the TaskBoard after 60s
+- **Phase-gating**: Plan execution pauses between phases for verification checkpoints
 
 ## Troubleshooting
 
-**"No tmux session" / agents run as background processes**
-- Make sure you started `tmux` before launching `gemini`
+**Agents run as background processes (no tmux panes)**
+- Start `tmux` before launching `gemini`
 
 **Extension not loading**
-- Verify the extension exists: `ls ~/.gemini/extensions/gemini-swarm/gemini-extension.json`
-- Rebuild: `cd ~/.gemini/extensions/gemini-swarm && npm run build`
+- Verify: `gemini --list-extensions`
+- Reinstall: `gemini extensions install https://github.com/tmdgusya/gemini-swarm`
 
-**Agents not completing**
-- Check tmux panes directly: `tmux list-windows`
-- Check for errors: `/swarm:status`
+**Agents not picking up tasks**
+- Check coordination server: `swarm_status`
+- Verify tasks exist: `swarm_task_list`
+
+## Development
+
+```bash
+npm install
+npm run build        # Bundle with esbuild
+npm run build:tsc    # Type-check only
+npm test             # Run tests
+```
 
 ## License
 
