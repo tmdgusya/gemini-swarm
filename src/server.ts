@@ -6,9 +6,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { TmuxSpawner, type StreamEvent } from './tmux-spawner.js';
 import { AgentTracker, type AgentRole } from './agent-tracker.js';
-import { MessageBus } from './message-bus.js';
+import { MessageBus, type Message } from './message-bus.js';
 import { InboxWatcher } from './inbox-watcher.js';
-import { rmSync, readFileSync, existsSync } from 'node:fs';
+import { LockManager } from './lock-manager.js';
+import { rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   parsePlan,
@@ -25,6 +26,7 @@ const spawner = new TmuxSpawner();
 const tracker = new AgentTracker(WORK_DIR);
 const messageBus = new MessageBus(WORK_DIR);
 const watcher = new InboxWatcher(join(WORK_DIR, 'inbox'));
+const lockManager = new LockManager(join(WORK_DIR, 'locks'));
 
 const server = new Server(
   { name: 'gemini-swarm', version: '0.1.0' },
@@ -90,6 +92,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'swarm_lock',
+      description: 'Acquire a simple lock on a file path to prevent concurrent access by agents.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          path: { type: 'string', description: 'File path to lock' },
+          agent: { type: 'string', description: 'Agent name requesting the lock' },
+          ttlMs: { type: 'number', description: 'Time To Live in milliseconds (optional)' },
+        },
+        required: ['path', 'agent'],
+      },
+    },
+    {
+      name: 'swarm_unlock',
+      description: 'Release a lock on a file path.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          path: { type: 'string', description: 'File path to unlock' },
+          agent: { type: 'string', description: 'Agent name releasing the lock' },
+        },
+        required: ['path', 'agent'],
+      },
+    },
+    {
       name: 'swarm_plan_execute',
       description:
         'Execute a structured plan phase-by-phase. Dispatches all tasks in the current phase as parallel agents, waits for completion, updates plan.md status markers, and returns. Call this once per phase — it returns after each phase for a verification checkpoint.',
@@ -136,6 +163,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return handleSend(args as { to: string; message: string });
     case 'swarm_kill':
       return handleKill(args as { agent?: string });
+    case 'swarm_lock':
+      return handleLock(args as { path: string; agent: string });
+    case 'swarm_unlock':
+      return handleUnlock(args as { path: string; agent: string });
     case 'swarm_plan_execute':
       return handlePlanExecute(args as {
         planDir: string;
@@ -365,6 +396,32 @@ async function handleKill(args: { agent?: string }) {
   }
 
   return { content: [{ type: 'text' as const, text: JSON.stringify({ killed }) }] };
+}
+
+async function handleLock(args: { path: string; agent: string; ttlMs?: number }) {
+  const acquired = lockManager.acquireLock(args.path, args.agent, args.ttlMs);
+  if (acquired) {
+    return { content: [{ type: 'text' as const, text: `Lock acquired for ${args.path} by agent ${args.agent}${args.ttlMs ? ` (expires in ${args.ttlMs}ms)` : ''}` }] };
+  } else {
+    // Check if it's already held by the same agent or someone else
+    // We already handle re-entrancy in LockManager, so if it returns false, it's held by someone else
+    return {
+      content: [{ type: 'text' as const, text: `Failed to acquire lock for ${args.path}. It is held by another agent or is currently busy.` }],
+      isError: true,
+    };
+  }
+}
+
+async function handleUnlock(args: { path: string; agent: string }) {
+  const released = lockManager.releaseLock(args.path, args.agent);
+  if (released) {
+    return { content: [{ type: 'text' as const, text: `Lock released for ${args.path}` }] };
+  } else {
+    return {
+      content: [{ type: 'text' as const, text: `Failed to release lock for ${args.path}. You might not be the owner.` }],
+      isError: true,
+    };
+  }
 }
 
 // --- Plan Execution ---
@@ -635,6 +692,18 @@ function buildAgentPrompt(task: PlanTask, spec: string, phase: PlanPhase): strin
   return prompt;
 }
 
+const HEALTH_CHECK_TIMEOUT = 30000; // 30 seconds
+const HEALTH_CHECK_INTERVAL = 10000; // 10 seconds
+
+function startHealthCheckLoop(): void {
+  setInterval(() => {
+    const unresponsive = tracker.checkHealth(HEALTH_CHECK_TIMEOUT);
+    for (const name of unresponsive) {
+      console.warn(`[orchestrator] Agent ${name} is unresponsive (no heartbeat for >${HEALTH_CHECK_TIMEOUT}ms)`);
+    }
+  }, HEALTH_CHECK_INTERVAL);
+}
+
 // --- Start ---
 async function main() {
   // Start message watcher
@@ -642,12 +711,18 @@ async function main() {
     if (agentName === 'orchestrator') {
       const messages = messageBus.receive('orchestrator');
       for (const msg of messages) {
-        // Log received messages for now
-        console.error(`[orchestrator] Inbox: ${JSON.stringify(msg)}`);
+        if (msg.type === 'heartbeat') {
+          tracker.updateHeartbeat(msg.from);
+        } else {
+          console.error(`[orchestrator] Received ${msg.type} from ${msg.from}: ${JSON.stringify(msg.payload)}`);
+        }
       }
     }
   });
   watcher.start();
+
+  // Start health check loop
+  startHealthCheckLoop();
 
   // Re-monitor running agents
   const runningAgents = tracker.getRunningAgents();

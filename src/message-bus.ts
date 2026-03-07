@@ -1,8 +1,8 @@
-import { mkdirSync, appendFileSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-export type MessageType = 'task' | 'result' | 'info' | 'error' | 'heartbeat';
+export type MessageType = 'task' | 'result' | 'info' | 'error' | 'heartbeat' | 'ack';
 
 export interface Message {
   id: string;
@@ -11,6 +11,7 @@ export interface Message {
   type: MessageType;
   payload: unknown;
   timestamp: string;
+  ackId?: string; // ID of the message being acknowledged
 }
 
 const WORK_DIR = '/tmp/gemini-swarm';
@@ -18,18 +19,24 @@ const WORK_DIR = '/tmp/gemini-swarm';
 export class MessageBus {
   private inboxDir: string;
   private offsetsFile: string;
+  private pendingAcksFile: string;
   private offsets: Map<string, number> = new Map();
+  private pendingAcks: Map<string, Message> = new Map();
 
   constructor(workDir: string = WORK_DIR) {
     this.inboxDir = join(workDir, 'inbox');
     this.offsetsFile = join(workDir, 'offsets.json');
+    this.pendingAcksFile = join(workDir, 'pending_acks.json');
     mkdirSync(this.inboxDir, { recursive: true });
     this.loadOffsets();
+    this.loadPendingAcks();
   }
 
   saveOffsets(): void {
     const data = JSON.stringify(Object.fromEntries(this.offsets), null, 2);
-    writeFileSync(this.offsetsFile, data);
+    const tmpFile = `${this.offsetsFile}.tmp`;
+    writeFileSync(tmpFile, data);
+    renameSync(tmpFile, this.offsetsFile);
   }
 
   loadOffsets(): void {
@@ -43,7 +50,25 @@ export class MessageBus {
     }
   }
 
-  send(opts: { from: string; to: string; type: MessageType; payload: unknown }): Message {
+  savePendingAcks(): void {
+    const data = JSON.stringify(Object.fromEntries(this.pendingAcks), null, 2);
+    const tmpFile = `${this.pendingAcksFile}.tmp`;
+    writeFileSync(tmpFile, data);
+    renameSync(tmpFile, this.pendingAcksFile);
+  }
+
+  loadPendingAcks(): void {
+    if (!existsSync(this.pendingAcksFile)) return;
+    try {
+      const data = readFileSync(this.pendingAcksFile, 'utf-8');
+      const obj = JSON.parse(data);
+      this.pendingAcks = new Map(Object.entries(obj));
+    } catch (err) {
+      console.error(`Failed to load pending ACKs from ${this.pendingAcksFile}:`, err);
+    }
+  }
+
+  send(opts: { from: string; to: string; type: MessageType; payload: unknown; ackId?: string; requireAck?: boolean }): Message {
     const msg: Message = {
       id: `msg-${randomUUID().slice(0, 8)}`,
       from: opts.from,
@@ -51,11 +76,31 @@ export class MessageBus {
       type: opts.type,
       payload: opts.payload,
       timestamp: new Date().toISOString(),
+      ackId: opts.ackId,
     };
+
+    if (opts.requireAck) {
+      this.pendingAcks.set(msg.id, msg);
+      this.savePendingAcks();
+    }
 
     const filePath = join(this.inboxDir, `${opts.to}.jsonl`);
     appendFileSync(filePath, JSON.stringify(msg) + '\n');
     return msg;
+  }
+
+  sendAck(from: string, to: string, ackId: string): Message {
+    return this.send({
+      from,
+      to,
+      type: 'ack',
+      payload: { acked: true },
+      ackId,
+    });
+  }
+
+  getPendingAcks(): Message[] {
+    return Array.from(this.pendingAcks.values());
   }
 
   receive(agentName: string): Message[] {
@@ -76,10 +121,26 @@ export class MessageBus {
       this.saveOffsets();
     }
 
-    return newLines.map((line) => JSON.parse(line) as Message);
+    const messages = newLines.map((line) => JSON.parse(line) as Message);
+
+    let changed = false;
+    for (const msg of messages) {
+      if (msg.type === 'ack' && msg.ackId) {
+        if (this.pendingAcks.has(msg.ackId)) {
+          this.pendingAcks.delete(msg.ackId);
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      this.savePendingAcks();
+    }
+
+    return messages;
   }
 
-  broadcast(from: string, agents: string[], type: MessageType, payload: unknown): Message[] {
-    return agents.map((to) => this.send({ from, to, type, payload }));
+  broadcast(from: string, agents: string[], type: MessageType, payload: unknown, requireAck?: boolean): Message[] {
+    return agents.map((to) => this.send({ from, to, type, payload, requireAck }));
   }
 }

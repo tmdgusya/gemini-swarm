@@ -1,0 +1,18 @@
+name = "swarm_lock"
+description = "Acquire a simple lock on a file path to prevent concurrent access by agents."
+
+[inputSchema]
+type = "object"
+required = ["path", "agent"]
+
+[inputSchema.properties.path]
+type = "string"
+description = "File path to lock"
+
+[inputSchema.properties.agent]
+type = "string"
+description = "Agent name requesting the lock"
+
+[inputSchema.properties.ttlMs]
+type = "number"
+description = "Time To Live in milliseconds (optional)"

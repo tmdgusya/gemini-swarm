@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export type AgentRole = 'researcher' | 'coder' | 'reviewer' | 'generalist';
-export type AgentStatus = 'spawning' | 'running' | 'completed' | 'failed' | 'killed';
+export type AgentStatus = 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'unresponsive';
 
 export interface TrackedAgent {
   name: string;
@@ -15,6 +15,7 @@ export interface TrackedAgent {
   pid?: number;
   startedAt: string;
   completedAt?: string;
+  lastHeartbeatAt?: string;
   response?: string;
   error?: string;
   durationMs?: number;
@@ -44,7 +45,9 @@ export class AgentTracker {
 
   save(): void {
     const agents = Array.from(this.agents.values());
-    writeFileSync(this.stateFile, JSON.stringify(agents, null, 2));
+    const tmpFile = `${this.stateFile}.tmp`;
+    writeFileSync(tmpFile, JSON.stringify(agents, null, 2));
+    renameSync(tmpFile, this.stateFile);
   }
 
   load(): void {
@@ -97,6 +100,45 @@ export class AgentTracker {
     this.save();
   }
 
+  updateHeartbeat(name: string): void {
+    const agent = this.agents.get(name);
+    if (!agent) return;
+    agent.lastHeartbeatAt = new Date().toISOString();
+    // If it was unresponsive, bring it back
+    if (agent.status === 'unresponsive') {
+      agent.status = 'running';
+    }
+    this.save();
+  }
+
+  checkHealth(timeoutMs: number): string[] {
+    const now = Date.now();
+    const unresponsive: string[] = [];
+
+    for (const agent of this.agents.values()) {
+      if (agent.status !== 'running' && agent.status !== 'spawning' && agent.status !== 'unresponsive') {
+        continue;
+      }
+
+      const lastHb = agent.lastHeartbeatAt
+        ? new Date(agent.lastHeartbeatAt).getTime()
+        : new Date(agent.startedAt).getTime();
+
+      if (now - lastHb > timeoutMs) {
+        if (agent.status !== 'unresponsive') {
+          agent.status = 'unresponsive';
+          unresponsive.push(agent.name);
+        }
+      }
+    }
+
+    if (unresponsive.length > 0) {
+      this.save();
+    }
+
+    return unresponsive;
+  }
+
   getAgent(name: string): TrackedAgent | undefined {
     return this.agents.get(name);
   }
@@ -106,7 +148,7 @@ export class AgentTracker {
   }
 
   getRunningAgents(): TrackedAgent[] {
-    return this.getAllAgents().filter(a => a.status === 'spawning' || a.status === 'running');
+    return this.getAllAgents().filter(a => a.status === 'spawning' || a.status === 'running' || a.status === 'unresponsive');
   }
 
   removeAgent(name: string): void {

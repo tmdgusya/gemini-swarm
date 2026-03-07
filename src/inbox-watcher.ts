@@ -18,7 +18,7 @@ export class InboxWatcher extends EventEmitter {
     if (this.watcher) return;
 
     this.watcher = watch(this.inboxDir, (eventType, filename) => {
-      if (eventType === 'change' && filename?.endsWith('.jsonl')) {
+      if ((eventType === 'change' || eventType === 'rename') && filename?.endsWith('.jsonl')) {
         const agentName = filename.replace('.jsonl', '');
         this.emit('message', agentName);
       }
