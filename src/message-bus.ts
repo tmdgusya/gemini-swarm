@@ -1,4 +1,4 @@
-import { mkdirSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, appendFileSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -17,11 +17,30 @@ const WORK_DIR = '/tmp/gemini-swarm';
 
 export class MessageBus {
   private inboxDir: string;
+  private offsetsFile: string;
   private offsets: Map<string, number> = new Map();
 
   constructor(workDir: string = WORK_DIR) {
     this.inboxDir = join(workDir, 'inbox');
+    this.offsetsFile = join(workDir, 'offsets.json');
     mkdirSync(this.inboxDir, { recursive: true });
+    this.loadOffsets();
+  }
+
+  saveOffsets(): void {
+    const data = JSON.stringify(Object.fromEntries(this.offsets), null, 2);
+    writeFileSync(this.offsetsFile, data);
+  }
+
+  loadOffsets(): void {
+    if (!existsSync(this.offsetsFile)) return;
+    try {
+      const data = readFileSync(this.offsetsFile, 'utf-8');
+      const obj = JSON.parse(data);
+      this.offsets = new Map(Object.entries(obj));
+    } catch (err) {
+      console.error(`Failed to load offsets from ${this.offsetsFile}:`, err);
+    }
   }
 
   send(opts: { from: string; to: string; type: MessageType; payload: unknown }): Message {
@@ -52,7 +71,10 @@ export class MessageBus {
     const lines = content.split('\n').filter((line) => line.length > 0);
     const newLines = lines.slice(offset);
 
-    this.offsets.set(agentName, lines.length);
+    if (newLines.length > 0) {
+      this.offsets.set(agentName, lines.length);
+      this.saveOffsets();
+    }
 
     return newLines.map((line) => JSON.parse(line) as Message);
   }

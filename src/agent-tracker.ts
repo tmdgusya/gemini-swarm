@@ -33,10 +33,30 @@ const WORK_DIR = '/tmp/gemini-swarm';
 export class AgentTracker {
   private agents: Map<string, TrackedAgent> = new Map();
   private resultsDir: string;
+  private stateFile: string;
 
   constructor(workDir: string = WORK_DIR) {
     this.resultsDir = join(workDir, 'results');
+    this.stateFile = join(workDir, 'agents.json');
     mkdirSync(this.resultsDir, { recursive: true });
+    this.load();
+  }
+
+  save(): void {
+    const agents = Array.from(this.agents.values());
+    writeFileSync(this.stateFile, JSON.stringify(agents, null, 2));
+  }
+
+  load(): void {
+    if (existsSync(this.stateFile)) {
+      try {
+        const data = readFileSync(this.stateFile, 'utf-8');
+        const agents: TrackedAgent[] = JSON.parse(data);
+        this.agents = new Map(agents.map(a => [a.name, a]));
+      } catch (err) {
+        console.error(`Failed to load agent state: ${err}`);
+      }
+    }
   }
 
   register(opts: {
@@ -58,6 +78,7 @@ export class AgentTracker {
       startedAt: new Date().toISOString(),
     };
     this.agents.set(opts.name, agent);
+    this.save();
     return agent;
   }
 
@@ -73,6 +94,7 @@ export class AgentTracker {
         this.saveResult(agent);
       }
     }
+    this.save();
   }
 
   getAgent(name: string): TrackedAgent | undefined {
@@ -89,10 +111,12 @@ export class AgentTracker {
 
   removeAgent(name: string): void {
     this.agents.delete(name);
+    this.save();
   }
 
   clearAll(): void {
     this.agents.clear();
+    this.save();
   }
 
   private saveResult(agent: TrackedAgent): void {

@@ -7,7 +7,9 @@ import {
 import { TmuxSpawner, type StreamEvent } from './tmux-spawner.js';
 import { AgentTracker, type AgentRole } from './agent-tracker.js';
 import { MessageBus } from './message-bus.js';
+import { InboxWatcher } from './inbox-watcher.js';
 import { rmSync, readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   parsePlan,
   updateTaskStatus,
@@ -22,6 +24,7 @@ const WORK_DIR = '/tmp/gemini-swarm';
 const spawner = new TmuxSpawner();
 const tracker = new AgentTracker(WORK_DIR);
 const messageBus = new MessageBus(WORK_DIR);
+const watcher = new InboxWatcher(join(WORK_DIR, 'inbox'));
 
 const server = new Server(
   { name: 'gemini-swarm', version: '0.1.0' },
@@ -634,6 +637,36 @@ function buildAgentPrompt(task: PlanTask, spec: string, phase: PlanPhase): strin
 
 // --- Start ---
 async function main() {
+  // Start message watcher
+  watcher.on('message', (agentName) => {
+    if (agentName === 'orchestrator') {
+      const messages = messageBus.receive('orchestrator');
+      for (const msg of messages) {
+        // Log received messages for now
+        console.error(`[orchestrator] Inbox: ${JSON.stringify(msg)}`);
+      }
+    }
+  });
+  watcher.start();
+
+  // Re-monitor running agents
+  const runningAgents = tracker.getRunningAgents();
+  if (runningAgents.length > 0) {
+    console.log(`Re-monitoring ${runningAgents.length} running agents...`);
+    for (const agent of runningAgents) {
+      if (agent.paneId && spawner.tmuxAvailable && !agent.paneId.startsWith('bg-')) {
+        spawner.reRegister(agent.name, agent.paneId);
+        const waiter = spawner.getWaiter(agent.name);
+        monitorAgent(agent.name, waiter, true);
+      } else if (agent.pid && !spawner.tmuxAvailable) {
+        // For background processes, we can't easily re-attach stdout,
+        // but we can at least wait for them to finish if they are still alive.
+        // For now, mark them as failed as we can't recover stdout.
+        tracker.updateStatus(agent.name, 'failed', { error: 'Server restarted, background agent lost' });
+      }
+    }
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

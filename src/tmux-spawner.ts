@@ -152,6 +152,17 @@ export class TmuxSpawner {
     this.paneMap.delete(name);
   }
 
+  reRegister(name: string, paneId: string): void {
+    this.paneMap.set(name, paneId);
+  }
+
+  getWaiter(name: string): ChildProcess {
+    const channel = this.channelName(name);
+    return spawn('tmux', ['wait-for', channel], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
   private killPane(name: string, paneId: string): void {
     try {
       execSync(`tmux kill-pane -t ${paneId}`, { stdio: 'pipe' });
