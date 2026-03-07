@@ -4,7 +4,9 @@
   "description": "Gemini CLI swarm mode extension — tmux + JSONL based",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:bundle",
+    "build:tsc": "tsc",
+    "build:bundle": "node esbuild.config.js",
     "watch": "tsc --watch",
     "test": "tsx --test src/tests/*.test.ts",
     "start:coord": "node dist/coord-server.js"
@@ -14,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.27.3",
     "smol-toml": "^1.6.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"

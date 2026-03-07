@@ -1,4 +1,15 @@
 node_modules/
-dist/
 /tmp/
 swarm/plans/
+# dist/ is committed — bundled with esbuild for zero-install extension support
+# Only server.js and coord-server.js are needed (self-contained bundles)
+dist/*.d.ts
+dist/tests/
+dist/agent-tracker.js
+dist/coord-client.js
+dist/inbox-watcher.js
+dist/lock-manager.js
+dist/message-bus.js
+dist/plan-parser.js
+dist/tmux-spawner.js
+dist/types.js
