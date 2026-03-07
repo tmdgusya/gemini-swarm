@@ -2,8 +2,9 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, join } from 'node:path';
 import { LockManager } from './lock-manager.js';
+import { WORK_DIR, COORD_PORT_FILE, TASKBOARD_FILE, AGENTS_FILE } from './types.js';
 import type {
   SwarmTask,
   CreateTasksRequest,
@@ -22,10 +23,7 @@ import type {
 
 // ─── Constants ───
 
-const WORK_DIR = '/tmp/gemini-swarm';
-const PORT_FILE = '/tmp/gemini-swarm/server.port';
-const TASKBOARD_FILE = '/tmp/gemini-swarm/taskboard.json';
-const AGENTS_FILE = '/tmp/gemini-swarm/coord-agents.json';
+const PORT_FILE = COORD_PORT_FILE;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_DEAD_MS = 60_000;
 
@@ -368,10 +366,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 // ─── Server startup ───
 
 export function startCoordServer(): Promise<ReturnType<typeof createServer>> {
-  return new Promise((resolve) => {
-    mkdirSync(WORK_DIR, { recursive: true });
+  return new Promise((resolve, reject) => {
+    try {
+      mkdirSync(WORK_DIR, { recursive: true });
+      const testFile = join(WORK_DIR, '.write-test-server');
+      writeFileSync(testFile, 'ok');
+      unlinkSync(testFile);
+    } catch (err) {
+      const message = `Coordination directory ${WORK_DIR} is not writable: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      console.error(`[coord] ${message}`);
+      reject(new Error(message));
+      return;
+    }
 
-    lockManager = new LockManager();
+    lockManager = new LockManager(join(WORK_DIR, 'locks'));
     startTime = Date.now();
 
     // Load persisted state

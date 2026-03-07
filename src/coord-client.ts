@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ import type {
   SwarmTask,
   TaskStatus,
 } from './types.js';
-import { COORD_PORT_FILE } from './types.js';
+import { COORD_PORT_FILE, WORK_DIR } from './types.js';
 
 class CoordError extends Error {
   constructor(
@@ -44,12 +44,18 @@ export class CoordClient {
     if (body !== undefined) {
       init.body = JSON.stringify(body);
     }
-    const res = await fetch(url, init);
-    const text = await res.text();
-    if (!res.ok) {
-      throw new CoordError(`${method} ${path} failed`, res.status, text);
+    try {
+      const res = await fetch(url, init);
+      const text = await res.text();
+      if (!res.ok) {
+        throw new CoordError(`${method} ${path} failed`, res.status, text);
+      }
+      return text ? (JSON.parse(text) as T) : (undefined as T);
+    } catch (err: unknown) {
+      if (err instanceof CoordError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to connect to coordination server at ${this.baseUrl}. Please ensure the server is running. Error: ${message}`);
     }
-    return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
   /**
@@ -61,17 +67,23 @@ export class CoordClient {
     body?: unknown,
   ): Promise<T | null> {
     const url = `${this.baseUrl}${path}`;
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    const text = await res.text();
-    if (res.status === 409) return null;
-    if (!res.ok) {
-      throw new CoordError(`${method} ${path} failed`, res.status, text);
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      if (res.status === 409) return null;
+      if (!res.ok) {
+        throw new CoordError(`${method} ${path} failed`, res.status, text);
+      }
+      return text ? (JSON.parse(text) as T) : (undefined as T);
+    } catch (err: unknown) {
+      if (err instanceof CoordError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to connect to coordination server at ${this.baseUrl}. Please ensure the server is running. Error: ${message}`);
     }
-    return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
   /**
@@ -83,17 +95,23 @@ export class CoordClient {
     body?: unknown,
   ): Promise<boolean> {
     const url = `${this.baseUrl}${path}`;
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    const text = await res.text();
-    if (res.status === 409) return false;
-    if (!res.ok) {
-      throw new CoordError(`${method} ${path} failed`, res.status, text);
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      if (res.status === 409) return false;
+      if (!res.ok) {
+        throw new CoordError(`${method} ${path} failed`, res.status, text);
+      }
+      return true;
+    } catch (err: unknown) {
+      if (err instanceof CoordError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to connect to coordination server at ${this.baseUrl}. Please ensure the server is running. Error: ${message}`);
     }
-    return true;
   }
 
   // ─── TaskBoard ───
@@ -266,10 +284,24 @@ export async function getOrStartCoordServer(): Promise<CoordClient> {
     dirname(fileURLToPath(import.meta.url)),
     'coord-server.js',
   );
-  const proc = spawn('node', [serverPath], {
+
+  // Ensure the work directory exists and is writable before spawning
+  try {
+    mkdirSync(WORK_DIR, { recursive: true });
+    const testFile = join(WORK_DIR, '.write-test');
+    writeFileSync(testFile, 'ok');
+    unlinkSync(testFile);
+  } catch (err) {
+    throw new Error(
+      `Coordination directory ${WORK_DIR} is not writable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  const proc = spawn(process.execPath, [serverPath], {
     detached: true,
     stdio: 'ignore',
-    cwd: '/tmp/gemini-swarm',
   });
   proc.unref();
 

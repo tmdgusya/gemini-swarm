@@ -5,15 +5,33 @@ import { createServer } from "node:http";
 import { mkdirSync as mkdirSync2, writeFileSync as writeFileSync2, renameSync, readFileSync as readFileSync2, existsSync as existsSync2, unlinkSync as unlinkSync2 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, join as join3 } from "node:path";
 
 // src/lock-manager.ts
 import { writeFileSync, unlinkSync, existsSync, readFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 import { createHash } from "node:crypto";
+
+// src/types.ts
+import * as os from "os";
+import * as path from "path";
+function getUsername() {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return process.env.USER || process.env.USERNAME || "default";
+  }
+}
+var USERNAME = getUsername();
+var WORK_DIR = path.join(os.tmpdir(), `gemini-swarm-${USERNAME}`);
+var COORD_PORT_FILE = path.join(WORK_DIR, "server.port");
+var TASKBOARD_FILE = path.join(WORK_DIR, "taskboard.json");
+var AGENTS_FILE = path.join(WORK_DIR, "coord-agents.json");
+
+// src/lock-manager.ts
 var LockManager = class {
   lockDir;
-  constructor(lockDir = "/tmp/gemini-swarm/locks") {
+  constructor(lockDir = join2(WORK_DIR, "locks")) {
     this.lockDir = lockDir;
     mkdirSync(this.lockDir, { recursive: true });
   }
@@ -149,15 +167,12 @@ var LockManager = class {
   }
   getLockFilePath(resourceId) {
     const hash = createHash("sha256").update(resourceId).digest("hex");
-    return join(this.lockDir, `${hash}.lock`);
+    return join2(this.lockDir, `${hash}.lock`);
   }
 };
 
 // src/coord-server.ts
-var WORK_DIR = "/tmp/gemini-swarm";
-var PORT_FILE = "/tmp/gemini-swarm/server.port";
-var TASKBOARD_FILE = "/tmp/gemini-swarm/taskboard.json";
-var AGENTS_FILE = "/tmp/gemini-swarm/coord-agents.json";
+var PORT_FILE = COORD_PORT_FILE;
 var HEARTBEAT_INTERVAL_MS = 15e3;
 var HEARTBEAT_DEAD_MS = 6e4;
 var tasks = /* @__PURE__ */ new Map();
@@ -250,13 +265,13 @@ function pathname(url) {
 async function handleRequest(req, res) {
   const method = req.method ?? "GET";
   const rawUrl = req.url ?? "/";
-  const path = pathname(rawUrl);
+  const path2 = pathname(rawUrl);
   const query = parseQuery(rawUrl);
   if (method === "OPTIONS") {
     json(res, 204, "");
     return;
   }
-  if (method === "GET" && path === "/health") {
+  if (method === "GET" && path2 === "/health") {
     const taskArr = Array.from(tasks.values());
     const health = {
       status: "ok",
@@ -272,7 +287,7 @@ async function handleRequest(req, res) {
     json(res, 200, health);
     return;
   }
-  if (method === "POST" && path === "/tasks") {
+  if (method === "POST" && path2 === "/tasks") {
     const body = JSON.parse(await readBody(req));
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const created = [];
@@ -294,7 +309,7 @@ async function handleRequest(req, res) {
     json(res, 201, created);
     return;
   }
-  if (method === "GET" && path === "/tasks") {
+  if (method === "GET" && path2 === "/tasks") {
     let result = Array.from(tasks.values());
     const statusFilter = query.get("status");
     if (statusFilter) {
@@ -308,7 +323,7 @@ async function handleRequest(req, res) {
     json(res, 200, result);
     return;
   }
-  const taskMatch = path.match(/^\/tasks\/([^/]+)(\/(?:claim|complete|fail))?$/);
+  const taskMatch = path2.match(/^\/tasks\/([^/]+)(\/(?:claim|complete|fail))?$/);
   if (taskMatch) {
     const taskId = taskMatch[1];
     const action = taskMatch[2];
@@ -370,7 +385,7 @@ async function handleRequest(req, res) {
       return;
     }
   }
-  if (method === "POST" && path === "/agents/register") {
+  if (method === "POST" && path2 === "/agents/register") {
     const body = JSON.parse(await readBody(req));
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const agent = {
@@ -385,7 +400,7 @@ async function handleRequest(req, res) {
     json(res, 200, agent);
     return;
   }
-  if (method === "POST" && path === "/agents/heartbeat") {
+  if (method === "POST" && path2 === "/agents/heartbeat") {
     const body = JSON.parse(await readBody(req));
     const agent = agents.get(body.name);
     if (!agent) {
@@ -400,11 +415,11 @@ async function handleRequest(req, res) {
     json(res, 200, { ok: true });
     return;
   }
-  if (method === "GET" && path === "/agents") {
+  if (method === "GET" && path2 === "/agents") {
     json(res, 200, Array.from(agents.values()));
     return;
   }
-  if (method === "POST" && path === "/messages") {
+  if (method === "POST" && path2 === "/messages") {
     const body = JSON.parse(await readBody(req));
     const msg = {
       id: `msg-${randomUUID().slice(0, 8)}`,
@@ -421,7 +436,7 @@ async function handleRequest(req, res) {
     json(res, 200, msg);
     return;
   }
-  const msgMatch = path.match(/^\/messages\/([^/]+)$/);
+  const msgMatch = path2.match(/^\/messages\/([^/]+)$/);
   if (method === "GET" && msgMatch) {
     const agentName = msgMatch[1];
     const since = Number(query.get("since") ?? "0");
@@ -430,7 +445,7 @@ async function handleRequest(req, res) {
     json(res, 200, { messages, nextOffset: queue.length });
     return;
   }
-  if (method === "POST" && path === "/locks") {
+  if (method === "POST" && path2 === "/locks") {
     const body = JSON.parse(await readBody(req));
     const acquired = lockManager.acquireLock(body.resource, body.owner, body.ttlMs);
     if (acquired) {
@@ -440,7 +455,7 @@ async function handleRequest(req, res) {
     }
     return;
   }
-  const lockMatch = path.match(/^\/locks\/(.+)$/);
+  const lockMatch = path2.match(/^\/locks\/(.+)$/);
   if (method === "DELETE" && lockMatch) {
     const resource = decodeURIComponent(lockMatch[1]);
     const body = JSON.parse(await readBody(req));
@@ -451,9 +466,19 @@ async function handleRequest(req, res) {
   json(res, 404, { error: "Not found" });
 }
 function startCoordServer() {
-  return new Promise((resolve) => {
-    mkdirSync2(WORK_DIR, { recursive: true });
-    lockManager = new LockManager();
+  return new Promise((resolve, reject) => {
+    try {
+      mkdirSync2(WORK_DIR, { recursive: true });
+      const testFile = join3(WORK_DIR, ".write-test-server");
+      writeFileSync2(testFile, "ok");
+      unlinkSync2(testFile);
+    } catch (err) {
+      const message = `Coordination directory ${WORK_DIR} is not writable: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[coord] ${message}`);
+      reject(new Error(message));
+      return;
+    }
+    lockManager = new LockManager(join3(WORK_DIR, "locks"));
     startTime = Date.now();
     loadTasks();
     loadAgents();

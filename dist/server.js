@@ -3222,8 +3222,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path) {
-      let input = path;
+    function removeDotSegments(path2) {
+      let input = path2;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3422,8 +3422,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path && path !== "/" ? path : void 0;
+        const [path2, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -7157,8 +7157,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path, errorMaps, issueData } = params;
-  const fullPath = [...path, ...issueData.path || []];
+  const { data, path: path2, errorMaps, issueData } = params;
+  const fullPath = [...path2, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7273,11 +7273,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path, key) {
+  constructor(parent, value, path2, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path;
+    this._path = path2;
     this._key = key;
   }
   get path() {
@@ -10921,10 +10921,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path) {
-  if (!path)
+function getElementAtPath(obj, path2) {
+  if (!path2)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path2.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11307,11 +11307,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path, issues) {
+function prefixIssues(path2, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path);
+    iss.path.unshift(path2);
     return iss;
   });
 }
@@ -20809,7 +20809,26 @@ var StdioServerTransport = class {
 
 // src/tmux-spawner.ts
 import { spawn, execSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join as join2 } from "node:path";
+
+// src/types.ts
+import * as os from "os";
+import * as path from "path";
+function getUsername() {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return process.env.USER || process.env.USERNAME || "default";
+  }
+}
+var USERNAME = getUsername();
+var WORK_DIR = path.join(os.tmpdir(), `gemini-swarm-${USERNAME}`);
+var COORD_PORT_FILE = path.join(WORK_DIR, "server.port");
+var TASKBOARD_FILE = path.join(WORK_DIR, "taskboard.json");
+var AGENTS_FILE = path.join(WORK_DIR, "coord-agents.json");
+
+// src/tmux-spawner.ts
 var TmuxSpawner = class _TmuxSpawner {
   hasTmux;
   inTmux;
@@ -20830,7 +20849,7 @@ var TmuxSpawner = class _TmuxSpawner {
     return this.hasTmux && this.inTmux;
   }
   static outputPath(name) {
-    return `/tmp/gemini-swarm/output-${name}.jsonl`;
+    return join2(WORK_DIR, `output-${name}.jsonl`);
   }
   channelName(name) {
     return `swarm-${name}-done`;
@@ -20852,6 +20871,7 @@ var TmuxSpawner = class _TmuxSpawner {
     const geminiCmd = ["gemini", ...args.map((a) => shellEscape(a))].join(" ");
     const outputFile = _TmuxSpawner.outputPath(name);
     const channel = this.channelName(name);
+    mkdirSync(WORK_DIR, { recursive: true });
     writeFileSync(outputFile, "");
     const tmuxCmd = `SWARM_AGENT_NAME=${shellEscape(name)} ${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
     const paneId = execSync(
@@ -21002,15 +21022,10 @@ function shellEscape(s) {
 }
 
 // src/coord-client.ts
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { spawn as spawn2 } from "node:child_process";
-import { join, dirname } from "node:path";
+import { join as join3, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-
-// src/types.ts
-var COORD_PORT_FILE = "/tmp/gemini-swarm/server.port";
-
-// src/coord-client.ts
 var CoordError = class extends Error {
   constructor(message, status, body) {
     super(`${message} (HTTP ${status}): ${body}`);
@@ -21024,8 +21039,8 @@ var CoordClient = class {
     this.baseUrl = baseUrl;
   }
   // ─── Internal helpers ───
-  async request(method, path, body) {
-    const url2 = `${this.baseUrl}${path}`;
+  async request(method, path2, body) {
+    const url2 = `${this.baseUrl}${path2}`;
     const init = {
       method,
       headers: { "Content-Type": "application/json" }
@@ -21033,46 +21048,64 @@ var CoordClient = class {
     if (body !== void 0) {
       init.body = JSON.stringify(body);
     }
-    const res = await fetch(url2, init);
-    const text = await res.text();
-    if (!res.ok) {
-      throw new CoordError(`${method} ${path} failed`, res.status, text);
+    try {
+      const res = await fetch(url2, init);
+      const text = await res.text();
+      if (!res.ok) {
+        throw new CoordError(`${method} ${path2} failed`, res.status, text);
+      }
+      return text ? JSON.parse(text) : void 0;
+    } catch (err) {
+      if (err instanceof CoordError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to connect to coordination server at ${this.baseUrl}. Please ensure the server is running. Error: ${message}`);
     }
-    return text ? JSON.parse(text) : void 0;
   }
   /**
    * Like request(), but returns `null` instead of throwing on 409 Conflict.
    */
-  async requestOr409Null(method, path, body) {
-    const url2 = `${this.baseUrl}${path}`;
-    const res = await fetch(url2, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: body !== void 0 ? JSON.stringify(body) : void 0
-    });
-    const text = await res.text();
-    if (res.status === 409) return null;
-    if (!res.ok) {
-      throw new CoordError(`${method} ${path} failed`, res.status, text);
+  async requestOr409Null(method, path2, body) {
+    const url2 = `${this.baseUrl}${path2}`;
+    try {
+      const res = await fetch(url2, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body !== void 0 ? JSON.stringify(body) : void 0
+      });
+      const text = await res.text();
+      if (res.status === 409) return null;
+      if (!res.ok) {
+        throw new CoordError(`${method} ${path2} failed`, res.status, text);
+      }
+      return text ? JSON.parse(text) : void 0;
+    } catch (err) {
+      if (err instanceof CoordError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to connect to coordination server at ${this.baseUrl}. Please ensure the server is running. Error: ${message}`);
     }
-    return text ? JSON.parse(text) : void 0;
   }
   /**
    * Like request(), but returns a boolean derived from 409 status for lock ops.
    */
-  async requestOr409Bool(method, path, body) {
-    const url2 = `${this.baseUrl}${path}`;
-    const res = await fetch(url2, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: body !== void 0 ? JSON.stringify(body) : void 0
-    });
-    const text = await res.text();
-    if (res.status === 409) return false;
-    if (!res.ok) {
-      throw new CoordError(`${method} ${path} failed`, res.status, text);
+  async requestOr409Bool(method, path2, body) {
+    const url2 = `${this.baseUrl}${path2}`;
+    try {
+      const res = await fetch(url2, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body !== void 0 ? JSON.stringify(body) : void 0
+      });
+      const text = await res.text();
+      if (res.status === 409) return false;
+      if (!res.ok) {
+        throw new CoordError(`${method} ${path2} failed`, res.status, text);
+      }
+      return true;
+    } catch (err) {
+      if (err instanceof CoordError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to connect to coordination server at ${this.baseUrl}. Please ensure the server is running. Error: ${message}`);
     }
-    return true;
   }
   // ─── TaskBoard ───
   async createTasks(tasks) {
@@ -21132,10 +21165,10 @@ var CoordClient = class {
     const params = new URLSearchParams();
     if (since !== void 0) params.set("since", String(since));
     const qs = params.toString();
-    const path = `/messages/${encodeURIComponent(agent)}${qs ? `?${qs}` : ""}`;
+    const path2 = `/messages/${encodeURIComponent(agent)}${qs ? `?${qs}` : ""}`;
     return this.request(
       "GET",
-      path
+      path2
     );
   }
   // ─── Locks ───
@@ -21183,14 +21216,23 @@ async function getOrStartCoordServer() {
       unlinkSync(portFile);
     }
   }
-  const serverPath = join(
+  const serverPath = join3(
     dirname(fileURLToPath(import.meta.url)),
     "coord-server.js"
   );
-  const proc = spawn2("node", [serverPath], {
+  try {
+    mkdirSync2(WORK_DIR, { recursive: true });
+    const testFile = join3(WORK_DIR, ".write-test");
+    writeFileSync2(testFile, "ok");
+    unlinkSync(testFile);
+  } catch (err) {
+    throw new Error(
+      `Coordination directory ${WORK_DIR} is not writable: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  const proc = spawn2(process.execPath, [serverPath], {
     detached: true,
-    stdio: "ignore",
-    cwd: "/tmp/gemini-swarm"
+    stdio: "ignore"
   });
   proc.unref();
   const port = await waitForPortFile(portFile, 1e4);
@@ -21203,7 +21245,7 @@ async function getOrStartCoordServer() {
 import { existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
 
 // src/plan-parser.ts
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
 var STATUS_MAP = {
   " ": "pending",
   "~": "in_progress",
@@ -21305,7 +21347,7 @@ function updateTaskStatus(planPath, taskId, status, sha) {
       final.push(line);
     }
   }
-  writeFileSync2(planPath, final.join("\n"));
+  writeFileSync3(planPath, final.join("\n"));
 }
 function findNextPendingPhase(plan) {
   for (const phase of plan.phases) {

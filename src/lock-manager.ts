@@ -1,6 +1,7 @@
 import { writeFileSync, unlinkSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { WORK_DIR } from './types.js';
 
 export interface LockInfo {
   owner: string;
@@ -11,7 +12,7 @@ export interface LockInfo {
 export class LockManager {
   private lockDir: string;
 
-  constructor(lockDir: string = '/tmp/gemini-swarm/locks') {
+  constructor(lockDir: string = join(WORK_DIR, 'locks')) {
     this.lockDir = lockDir;
     mkdirSync(this.lockDir, { recursive: true });
   }

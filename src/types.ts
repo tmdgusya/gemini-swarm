@@ -1,4 +1,7 @@
-// Shared types for Gemini Swarm coordination protocol
+import * as os from 'os';
+import * as path from 'path';
+
+// ─── Shared types for Gemini Swarm coordination protocol ───
 
 // ─── TaskBoard ───
 
@@ -107,8 +110,19 @@ export interface LockInfo {
 
 // ─── Coordination Server ───
 
-export const COORD_PORT_FILE = '/tmp/gemini-swarm/server.port';
-export const WORK_DIR = '/tmp/gemini-swarm';
+function getUsername(): string {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return process.env.USER || process.env.USERNAME || 'default';
+  }
+}
+
+const USERNAME = getUsername();
+export const WORK_DIR = path.join(os.tmpdir(), `gemini-swarm-${USERNAME}`);
+export const COORD_PORT_FILE = path.join(WORK_DIR, 'server.port');
+export const TASKBOARD_FILE = path.join(WORK_DIR, 'taskboard.json');
+export const AGENTS_FILE = path.join(WORK_DIR, 'coord-agents.json');
 
 export interface CoordHealth {
   status: 'ok';

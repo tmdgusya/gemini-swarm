@@ -1,6 +1,7 @@
 import { mkdirSync, appendFileSync, readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { WORK_DIR } from './types.js';
 
 export type MessageType = 'task' | 'result' | 'info' | 'error' | 'heartbeat' | 'ack';
 
@@ -13,8 +14,6 @@ export interface Message {
   timestamp: string;
   ackId?: string; // ID of the message being acknowledged
 }
-
-const WORK_DIR = '/tmp/gemini-swarm';
 
 export class MessageBus {
   private inboxDir: string;

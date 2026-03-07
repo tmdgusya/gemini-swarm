@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { WORK_DIR } from './types.js';
 
 export type AgentRole = 'researcher' | 'coder' | 'reviewer' | 'generalist';
 export type AgentStatus = 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'unresponsive';
@@ -28,8 +29,6 @@ export interface AgentResult {
   duration: number;
   completedAt: string;
 }
-
-const WORK_DIR = '/tmp/gemini-swarm';
 
 export class AgentTracker {
   private agents: Map<string, TrackedAgent> = new Map();

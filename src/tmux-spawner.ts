@@ -1,5 +1,7 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { WORK_DIR } from './types.js';
 
 export interface TmuxAgent {
   name: string;
@@ -49,7 +51,7 @@ export class TmuxSpawner {
   }
 
   static outputPath(name: string): string {
-    return `/tmp/gemini-swarm/output-${name}.jsonl`;
+    return join(WORK_DIR, `output-${name}.jsonl`);
   }
 
   private channelName(name: string): string {
@@ -75,6 +77,9 @@ export class TmuxSpawner {
     const geminiCmd = ['gemini', ...args.map(a => shellEscape(a))].join(' ');
     const outputFile = TmuxSpawner.outputPath(name);
     const channel = this.channelName(name);
+
+    // Ensure the output directory exists
+    mkdirSync(WORK_DIR, { recursive: true });
 
     // Truncate/create output file
     writeFileSync(outputFile, '');
