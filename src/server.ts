@@ -4,13 +4,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { TmuxSpawner, type StreamEvent } from './tmux-spawner.js';
-import { AgentTracker, type AgentRole } from './agent-tracker.js';
-import { MessageBus, type Message } from './message-bus.js';
-import { InboxWatcher } from './inbox-watcher.js';
-import { LockManager } from './lock-manager.js';
-import { rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { TmuxSpawner } from './tmux-spawner.js';
+import { CoordClient, getOrStartCoordServer } from './coord-client.js';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   parsePlan,
   updateTaskStatus,
@@ -19,49 +15,93 @@ import {
   type PlanTask,
   type PlanPhase,
 } from './plan-parser.js';
+import type { SwarmTask, AgentRole } from './types.js';
 
-const WORK_DIR = '/tmp/gemini-swarm';
+// ─── Shared state ───
 
 const spawner = new TmuxSpawner();
-const tracker = new AgentTracker(WORK_DIR);
-const messageBus = new MessageBus(WORK_DIR);
-const watcher = new InboxWatcher(join(WORK_DIR, 'inbox'));
-const lockManager = new LockManager(join(WORK_DIR, 'locks'));
+let coordClient: CoordClient | null = null;
+
+async function getClient(): Promise<CoordClient> {
+  if (!coordClient) {
+    coordClient = await getOrStartCoordServer();
+  }
+  return coordClient;
+}
+
+function getAgentName(): string {
+  return process.env['SWARM_AGENT_NAME'] ?? 'orchestrator';
+}
+
+// ─── MCP Server ───
 
 const server = new Server(
-  { name: 'gemini-swarm', version: '0.1.0' },
-  { capabilities: { tools: {} } }
+  { name: 'gemini-swarm', version: '0.2.0' },
+  { capabilities: { tools: {} } },
 );
 
 // --- List Tools ---
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    // ── Orchestrator tools ──
     {
-      name: 'swarm_dispatch',
-      description: 'Dispatch N parallel Gemini CLI agents. After dispatching, report the result to the user and STOP. Do not automatically call swarm_status or swarm_results — wait for the user to ask.',
+      name: 'swarm_init',
+      description:
+        'Start the coordination server if not already running. Returns server URL. Only call when you are the orchestrator (no SWARM_AGENT_NAME env var).',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    {
+      name: 'swarm_create_tasks',
+      description:
+        'Create tasks on the TaskBoard. Only call when you are the orchestrator (no SWARM_AGENT_NAME env var).',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          count: { type: 'number', description: 'Number of agents to spawn (1-10)', default: 3 },
-          prompt: { type: 'string', description: 'The task/prompt for agents' },
+          tasks: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Unique task ID' },
+                description: { type: 'string', description: 'Human-readable task description' },
+                phase: { type: 'number', description: 'Phase number (optional)' },
+                prompt: { type: 'string', description: 'Full prompt for the agent' },
+              },
+              required: ['id', 'description', 'prompt'],
+            },
+            description: 'Array of tasks to create',
+          },
+        },
+        required: ['tasks'],
+      },
+    },
+    {
+      name: 'swarm_spawn',
+      description:
+        'Spawn N Gemini CLI agent processes. Agents claim tasks themselves from the TaskBoard. Only call when you are the orchestrator (no SWARM_AGENT_NAME env var).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          count: { type: 'number', description: 'Number of agents to spawn (1-10)' },
           role: {
             type: 'string',
             enum: ['researcher', 'coder', 'reviewer', 'generalist'],
-            description: 'Agent role',
-            default: 'generalist',
+            description: 'Agent role (default: generalist)',
           },
         },
-        required: ['prompt'],
+        required: ['count'],
       },
     },
     {
       name: 'swarm_status',
-      description: 'Get current status of all swarm agents. Only call when the user explicitly asks for status.',
+      description:
+        'Get status of all agents and tasks. Can be used by both orchestrator and agents.',
       inputSchema: { type: 'object' as const, properties: {} },
     },
     {
       name: 'swarm_results',
-      description: 'Collect results from completed swarm agents. Only call when the user explicitly asks for results.',
+      description:
+        'Get completed task results. Only call when you are the orchestrator (no SWARM_AGENT_NAME env var).',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -70,8 +110,67 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'swarm_kill',
+      description:
+        'Kill agent processes. Only call when you are the orchestrator (no SWARM_AGENT_NAME env var).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          agent: { type: 'string', description: 'Agent name to kill (omit for all)' },
+        },
+      },
+    },
+    // ── Agent tools ──
+    {
+      name: 'swarm_task_list',
+      description:
+        'List available (open) tasks on the TaskBoard. Use when you are a swarm agent with an assigned identity.',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    {
+      name: 'swarm_task_claim',
+      description:
+        'Claim a task atomically from the TaskBoard. Use when you are a swarm agent with an assigned identity.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          task_id: { type: 'string', description: 'ID of the task to claim' },
+        },
+        required: ['task_id'],
+      },
+    },
+    {
+      name: 'swarm_task_complete',
+      description:
+        'Report task completion. Use when you are a swarm agent with an assigned identity.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          task_id: { type: 'string', description: 'ID of the completed task' },
+          result: { type: 'string', description: 'Result summary' },
+          sha: { type: 'string', description: 'Git SHA of the commit (optional)' },
+        },
+        required: ['task_id', 'result'],
+      },
+    },
+    {
+      name: 'swarm_task_fail',
+      description:
+        'Report task failure. Use when you are a swarm agent with an assigned identity.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          task_id: { type: 'string', description: 'ID of the failed task' },
+          error: { type: 'string', description: 'Error description' },
+        },
+        required: ['task_id', 'error'],
+      },
+    },
+    // ── Shared tools ──
+    {
       name: 'swarm_send',
-      description: 'Send a message to a specific agent via JSONL inbox',
+      description:
+        'Send a message to another agent. Can be used by both orchestrator and agents.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -82,50 +181,53 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'swarm_kill',
-      description: 'Kill swarm agents (specific or all)',
-      inputSchema: {
-        type: 'object' as const,
-        properties: {
-          agent: { type: 'string', description: 'Agent name to kill (omit for all)' },
-        },
-      },
+      name: 'swarm_receive',
+      description:
+        'Check inbox for messages. Can be used by both orchestrator and agents.',
+      inputSchema: { type: 'object' as const, properties: {} },
     },
     {
       name: 'swarm_lock',
-      description: 'Acquire a simple lock on a file path to prevent concurrent access by agents.',
+      description:
+        'Acquire a lock on a resource to prevent concurrent access. Can be used by both orchestrator and agents.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          path: { type: 'string', description: 'File path to lock' },
-          agent: { type: 'string', description: 'Agent name requesting the lock' },
+          resource: { type: 'string', description: 'Resource path to lock' },
           ttlMs: { type: 'number', description: 'Time To Live in milliseconds (optional)' },
         },
-        required: ['path', 'agent'],
+        required: ['resource'],
       },
     },
     {
       name: 'swarm_unlock',
-      description: 'Release a lock on a file path.',
+      description:
+        'Release a lock on a resource. Can be used by both orchestrator and agents.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          path: { type: 'string', description: 'File path to unlock' },
-          agent: { type: 'string', description: 'Agent name releasing the lock' },
+          resource: { type: 'string', description: 'Resource path to unlock' },
         },
-        required: ['path', 'agent'],
+        required: ['resource'],
       },
     },
     {
+      name: 'swarm_heartbeat',
+      description:
+        'Send a heartbeat to the coordination server. Use when you are a swarm agent with an assigned identity.',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    // ── Plan execution ──
+    {
       name: 'swarm_plan_execute',
       description:
-        'Execute a structured plan phase-by-phase. Dispatches all tasks in the current phase as parallel agents, waits for completion, updates plan.md status markers, and returns. Call this once per phase — it returns after each phase for a verification checkpoint.',
+        'Execute a structured plan phase-by-phase. Creates tasks on the TaskBoard, spawns agents, polls for completion, and updates plan.md. Only call when you are the orchestrator (no SWARM_AGENT_NAME env var).',
       inputSchema: {
         type: 'object' as const,
         properties: {
           planDir: {
             type: 'string',
-            description: 'Path to the plan directory containing plan.md and spec.md (e.g. swarm/plans/oauth_20260307)',
+            description: 'Path to the plan directory containing plan.md and spec.md',
           },
           resumePhase: {
             type: 'number',
@@ -152,279 +254,252 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  switch (name) {
-    case 'swarm_dispatch':
-      return handleDispatch(args as { count?: number; prompt: string; role?: string });
-    case 'swarm_status':
-      return handleStatus();
-    case 'swarm_results':
-      return handleResults(args as { task_id?: string });
-    case 'swarm_send':
-      return handleSend(args as { to: string; message: string });
-    case 'swarm_kill':
-      return handleKill(args as { agent?: string });
-    case 'swarm_lock':
-      return handleLock(args as { path: string; agent: string });
-    case 'swarm_unlock':
-      return handleUnlock(args as { path: string; agent: string });
-    case 'swarm_plan_execute':
-      return handlePlanExecute(args as {
-        planDir: string;
-        resumePhase?: number;
-        retryTasks?: string[];
-        skipTasks?: string[];
-      });
-    default:
-      return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
+  try {
+    switch (name) {
+      case 'swarm_init':
+        return await handleInit();
+      case 'swarm_create_tasks':
+        return await handleCreateTasks(args as { tasks: Array<{ id: string; description: string; phase?: number; prompt: string }> });
+      case 'swarm_spawn':
+        return await handleSpawn(args as { count: number; role?: string });
+      case 'swarm_status':
+        return await handleStatus();
+      case 'swarm_results':
+        return await handleResults(args as { task_id?: string });
+      case 'swarm_kill':
+        return await handleKill(args as { agent?: string });
+      case 'swarm_task_list':
+        return await handleTaskList();
+      case 'swarm_task_claim':
+        return await handleTaskClaim(args as { task_id: string });
+      case 'swarm_task_complete':
+        return await handleTaskComplete(args as { task_id: string; result: string; sha?: string });
+      case 'swarm_task_fail':
+        return await handleTaskFail(args as { task_id: string; error: string });
+      case 'swarm_send':
+        return await handleSend(args as { to: string; message: string });
+      case 'swarm_receive':
+        return await handleReceive();
+      case 'swarm_lock':
+        return await handleLock(args as { resource: string; ttlMs?: number });
+      case 'swarm_unlock':
+        return await handleUnlock(args as { resource: string });
+      case 'swarm_heartbeat':
+        return await handleHeartbeat();
+      case 'swarm_plan_execute':
+        return await handlePlanExecute(args as {
+          planDir: string;
+          resumePhase?: number;
+          retryTasks?: string[];
+          skipTasks?: string[];
+        });
+      default:
+        return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
   }
 });
 
-// --- Handlers ---
+// ─── Handlers ───
 
-async function handleDispatch(args: { count?: number; prompt: string; role?: string }) {
-  const count = Math.min(Math.max(args.count ?? 3, 1), 10);
+function ok(data: unknown) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+}
+
+function fail(message: string) {
+  return { content: [{ type: 'text' as const, text: message }], isError: true };
+}
+
+// ── Orchestrator tools ──
+
+async function handleInit() {
+  const client = await getClient();
+  const health = await client.health();
+  return ok({ status: 'running', url: (client as unknown as { baseUrl: string }).baseUrl ?? 'connected', health });
+}
+
+async function handleCreateTasks(args: { tasks: Array<{ id: string; description: string; phase?: number; prompt: string }> }) {
+  const client = await getClient();
+  const created = await client.createTasks(args.tasks);
+  return ok({ created: created.length, tasks: created });
+}
+
+async function handleSpawn(args: { count: number; role?: string }) {
+  const count = Math.min(Math.max(args.count, 1), 10);
   const role = (args.role ?? 'generalist') as AgentRole;
   const cwd = process.cwd();
 
-  const agents: Array<{ name: string; paneId: string; status: string; taskId: string }> = [];
+  // Ensure coordination server is running
+  const client = await getClient();
+
+  const agents: Array<{ name: string; paneId: string }> = [];
 
   for (let i = 0; i < count; i++) {
-    const agentName = `agent-${i + 1}`;
-    const agentPrompt = count > 1
-      ? `You are agent ${i + 1} of ${count} (role: ${role}). Task:\n${args.prompt}\n\nFocus on your portion. Be concise.`
-      : args.prompt;
+    const agentName = `agent-${Date.now()}-${i + 1}`;
+    const agentPrompt = buildSpawnPrompt(agentName, role);
 
-    const tmuxAgent = spawner.spawn({ name: agentName, prompt: agentPrompt, cwd });
-    const tracked = tracker.register({
+    const tmuxAgent = spawner.spawn({
       name: agentName,
-      role,
       prompt: agentPrompt,
-      paneId: tmuxAgent.paneId,
-      pid: tmuxAgent.pid,
+      cwd,
     });
 
-    tracker.updateStatus(agentName, 'running');
+    // Register agent with coordination server
+    await client.registerAgent(agentName, role);
 
-    // Monitor for completion
-    monitorAgent(agentName, tmuxAgent.process, spawner.tmuxAvailable);
-
-    agents.push({
-      name: agentName,
-      paneId: tmuxAgent.paneId,
-      status: 'running',
-      taskId: tracked.taskId,
-    });
+    agents.push({ name: agentName, paneId: tmuxAgent.paneId });
   }
 
-  // Apply tiled layout so all panes are evenly distributed
   spawner.applyTiledLayout();
 
-  const mode = spawner.tmuxAvailable ? 'tmux panes' : 'background processes';
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify({
-        dispatched: count,
-        mode,
-        role,
-        agents,
-      }, null, 2),
-    }],
-  };
-}
-
-function monitorAgent(name: string, proc: import('node:child_process').ChildProcess, useTmux: boolean): void {
-  const outputFile = TmuxSpawner.outputPath(name);
-
-  if (useTmux) {
-    // proc = tmux wait-for process. Closes exactly when gemini finishes.
-    proc.on('close', () => {
-      resolveFromFile(name, outputFile);
-      spawner.removePaneEntry(name);
-    });
-  } else {
-    // Background mode: collect stdout directly
-    let stdout = '';
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    proc.on('close', () => {
-      resolveFromRaw(name, stdout);
-    });
-  }
-
-  proc.on('error', (err) => {
-    tracker.updateStatus(name, 'failed', { error: err.message });
+  return ok({
+    spawned: count,
+    role,
+    agents: agents.map(a => a.name),
+    mode: spawner.tmuxAvailable ? 'tmux' : 'background',
   });
-}
-
-function resolveFromFile(name: string, outputFile: string): void {
-  try {
-    const raw = readFileSync(outputFile, 'utf-8');
-    resolveFromRaw(name, raw);
-  } catch (err) {
-    tracker.updateStatus(name, 'failed', { error: `Output read error: ${err}` });
-  }
-  try { rmSync(outputFile, { force: true }); } catch { /* ignore */ }
-}
-
-function resolveFromRaw(name: string, raw: string): void {
-  const events = TmuxSpawner.parseStreamEvents(raw);
-  const response = TmuxSpawner.extractResponse(events);
-  const errorEvent = events.find(e => e.type === 'error');
-
-  if (errorEvent) {
-    tracker.updateStatus(name, 'failed', { error: errorEvent.error ?? 'Unknown error', response });
-  } else if (response) {
-    tracker.updateStatus(name, 'completed', { response });
-  } else {
-    tracker.updateStatus(name, 'failed', { error: 'Agent exited without result' });
-  }
 }
 
 async function handleStatus() {
-  const agents = tracker.getAllAgents();
+  const client = await getClient();
+  const [agents, tasks] = await Promise.all([
+    client.listAgents(),
+    client.listTasks(),
+  ]);
 
-  if (agents.length === 0) {
-    return { content: [{ type: 'text' as const, text: 'No swarm agents active.' }] };
-  }
-
-  const statusTable = agents.map(a => ({
-    name: a.name,
-    role: a.role,
-    status: a.status,
-    taskId: a.taskId,
-    elapsed: a.completedAt
-      ? `${a.durationMs}ms`
-      : `${Date.now() - new Date(a.startedAt).getTime()}ms (running)`,
-    prompt: a.prompt.slice(0, 100) + (a.prompt.length > 100 ? '...' : ''),
-  }));
-
-  const running = agents.filter(a => a.status === 'running' || a.status === 'spawning');
-  const completed = agents.filter(a => a.status === 'completed' || a.status === 'failed');
-
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify({ agents: statusTable, tmux: spawner.tmuxAvailable }, null, 2),
-    }],
-    // Mark as error when all agents still running to discourage LLM from re-polling
-    ...(running.length > 0 && completed.length === 0 ? { isError: true } : {}),
+  const taskSummary = {
+    open: tasks.filter(t => t.status === 'open').length,
+    claimed: tasks.filter(t => t.status === 'claimed').length,
+    completed: tasks.filter(t => t.status === 'completed').length,
+    failed: tasks.filter(t => t.status === 'failed').length,
+    total: tasks.length,
   };
+
+  return ok({ agents, tasks: taskSummary, taskDetails: tasks });
 }
 
 async function handleResults(args: { task_id?: string }) {
+  const client = await getClient();
+
   if (args.task_id) {
-    const result = tracker.getResultByTaskId(args.task_id);
-    if (!result) {
-      return { content: [{ type: 'text' as const, text: `No result found for task ${args.task_id}` }] };
-    }
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+    const task = await client.getTask(args.task_id);
+    return ok(task);
   }
 
-  // Return all results — from both tracker memory and saved files
-  const agents = tracker.getAllAgents();
-  const results = agents
-    .filter(a => a.status === 'completed' || a.status === 'failed')
-    .map(a => ({
-      taskId: a.taskId,
-      agent: a.name,
-      role: a.role,
-      status: a.status,
-      response: a.response ?? '',
-      error: a.error,
-      duration: a.durationMs ?? 0,
-    }));
-
-  if (results.length === 0) {
-    const running = agents.filter(a => a.status === 'running' || a.status === 'spawning');
-    if (running.length > 0) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `All ${running.length} agent(s) still running. Results will appear when agents complete.`,
-        }],
-        isError: true,
-      };
-    }
-    return { content: [{ type: 'text' as const, text: 'No results available.' }] };
-  }
-
-  return { content: [{ type: 'text' as const, text: JSON.stringify({ results }, null, 2) }] };
-}
-
-async function handleSend(args: { to: string; message: string }) {
-  messageBus.send({
-    from: 'orchestrator',
-    to: args.to,
-    type: 'info',
-    payload: args.message,
-  });
-  return { content: [{ type: 'text' as const, text: JSON.stringify({ sent: true, to: args.to }) }] };
+  const tasks = await client.listTasks({ status: 'completed' });
+  const failed = await client.listTasks({ status: 'failed' });
+  return ok({ completed: tasks, failed });
 }
 
 async function handleKill(args: { agent?: string }) {
   const killed: string[] = [];
 
   if (args.agent) {
-    // Kill specific agent
-    const agent = tracker.getAgent(args.agent);
-    if (agent) {
-      if (agent.pid) {
-        try { process.kill(agent.pid, 'SIGTERM'); } catch { /* ignore */ }
-      }
-      spawner.kill(args.agent);
-      tracker.updateStatus(args.agent, 'killed');
-      killed.push(args.agent);
-    }
+    spawner.kill(args.agent);
+    killed.push(args.agent);
   } else {
-    // Kill all
-    const agents = tracker.getRunningAgents();
-    for (const agent of agents) {
-      if (agent.pid) {
-        try { process.kill(agent.pid, 'SIGTERM'); } catch { /* ignore */ }
-      }
-      spawner.kill(agent.name);
-      tracker.updateStatus(agent.name, 'killed');
-      killed.push(agent.name);
-    }
+    const allKilled = spawner.killAll();
+    killed.push(...allKilled);
   }
 
-  // Clean up output files
-  for (const name of killed) {
-    try { rmSync(TmuxSpawner.outputPath(name), { force: true }); } catch { /* ignore */ }
-  }
-
-  return { content: [{ type: 'text' as const, text: JSON.stringify({ killed }) }] };
+  return ok({ killed });
 }
 
-async function handleLock(args: { path: string; agent: string; ttlMs?: number }) {
-  const acquired = lockManager.acquireLock(args.path, args.agent, args.ttlMs);
+// ── Agent tools ──
+
+async function handleTaskList() {
+  const client = await getClient();
+  const tasks = await client.listTasks({ status: 'open' });
+  return ok({ tasks });
+}
+
+async function handleTaskClaim(args: { task_id: string }) {
+  const client = await getClient();
+  const agentName = getAgentName();
+  const task = await client.claimTask(args.task_id, agentName);
+
+  if (!task) {
+    return fail(`Task ${args.task_id} is already claimed or does not exist.`);
+  }
+
+  return ok(task);
+}
+
+async function handleTaskComplete(args: { task_id: string; result: string; sha?: string }) {
+  const client = await getClient();
+  const agentName = getAgentName();
+  const task = await client.completeTask(args.task_id, agentName, args.result, args.sha);
+  return ok(task);
+}
+
+async function handleTaskFail(args: { task_id: string; error: string }) {
+  const client = await getClient();
+  const agentName = getAgentName();
+  const task = await client.failTask(args.task_id, agentName, args.error);
+  return ok(task);
+}
+
+// ── Shared tools ──
+
+async function handleSend(args: { to: string; message: string }) {
+  const client = await getClient();
+  const from = getAgentName();
+  const msg = await client.sendMessage(from, args.to, 'info', args.message);
+  return ok({ sent: true, messageId: msg.id, to: args.to });
+}
+
+async function handleReceive() {
+  const client = await getClient();
+  const agentName = getAgentName();
+  const result = await client.receiveMessages(agentName);
+  return ok(result);
+}
+
+async function handleLock(args: { resource: string; ttlMs?: number }) {
+  const client = await getClient();
+  const owner = getAgentName();
+  const acquired = await client.acquireLock(args.resource, owner, args.ttlMs);
+
   if (acquired) {
-    return { content: [{ type: 'text' as const, text: `Lock acquired for ${args.path} by agent ${args.agent}${args.ttlMs ? ` (expires in ${args.ttlMs}ms)` : ''}` }] };
-  } else {
-    // Check if it's already held by the same agent or someone else
-    // We already handle re-entrancy in LockManager, so if it returns false, it's held by someone else
-    return {
-      content: [{ type: 'text' as const, text: `Failed to acquire lock for ${args.path}. It is held by another agent or is currently busy.` }],
-      isError: true,
-    };
+    return ok({ acquired: true, resource: args.resource, owner });
   }
+  return fail(`Failed to acquire lock for ${args.resource}. It is held by another agent.`);
 }
 
-async function handleUnlock(args: { path: string; agent: string }) {
-  const released = lockManager.releaseLock(args.path, args.agent);
+async function handleUnlock(args: { resource: string }) {
+  const client = await getClient();
+  const owner = getAgentName();
+  const released = await client.releaseLock(args.resource, owner);
+
   if (released) {
-    return { content: [{ type: 'text' as const, text: `Lock released for ${args.path}` }] };
-  } else {
-    return {
-      content: [{ type: 'text' as const, text: `Failed to release lock for ${args.path}. You might not be the owner.` }],
-      isError: true,
-    };
+    return ok({ released: true, resource: args.resource });
   }
+  return fail(`Failed to release lock for ${args.resource}. You might not be the owner.`);
 }
 
-// --- Plan Execution ---
+async function handleHeartbeat() {
+  const client = await getClient();
+  const agentName = getAgentName();
+  await client.heartbeat(agentName);
+  return ok({ ok: true, agent: agentName });
+}
+
+// ─── Plan Execution ───
+
+async function waitForTasksComplete(taskIds: string[], timeoutMs = 600000): Promise<SwarmTask[]> {
+  const client = await getClient();
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const tasks = await Promise.all(taskIds.map(id => client.getTask(id)));
+    const allDone = tasks.every(t => t.status === 'completed' || t.status === 'failed');
+    if (allDone) return tasks;
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  throw new Error('Task timeout');
+}
 
 async function handlePlanExecute(args: {
   planDir: string;
@@ -436,10 +511,7 @@ async function handlePlanExecute(args: {
   const specPath = `${args.planDir}/spec.md`;
 
   if (!existsSync(planPath)) {
-    return {
-      content: [{ type: 'text' as const, text: `Plan not found: ${planPath}` }],
-      isError: true,
-    };
+    return fail(`Plan not found: ${planPath}`);
   }
 
   const planContent = readFileSync(planPath, 'utf-8');
@@ -447,28 +519,22 @@ async function handlePlanExecute(args: {
 
   const targetPhaseNum = args.resumePhase ?? findNextPendingPhase(plan);
   if (targetPhaseNum === null) {
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({ status: 'plan_complete', title: plan.title, totalPhases: plan.phases.length }),
-      }],
-    };
+    return ok({ status: 'plan_complete', title: plan.title, totalPhases: plan.phases.length });
   }
 
   const phase = plan.phases.find(p => p.number === targetPhaseNum);
   if (!phase) {
-    return {
-      content: [{ type: 'text' as const, text: `Phase ${targetPhaseNum} not found in plan` }],
-      isError: true,
-    };
+    return fail(`Phase ${targetPhaseNum} not found in plan`);
   }
 
+  // Handle skipped tasks
   if (args.skipTasks?.length) {
     for (const taskId of args.skipTasks) {
       updateTaskStatus(planPath, taskId, 'completed', 'skipped');
     }
   }
 
+  // Re-read after skips
   const freshPlan = parsePlan(readFileSync(planPath, 'utf-8'));
   const freshPhase = freshPlan.phases.find(p => p.number === targetPhaseNum)!;
   let tasks: PlanTask[];
@@ -482,24 +548,14 @@ async function handlePlanExecute(args: {
   if (tasks.length === 0) {
     const nextPhase = findNextPendingPhase(freshPlan);
     if (nextPhase === null) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({ status: 'plan_complete', title: plan.title, totalPhases: plan.phases.length }),
-        }],
-      };
+      return ok({ status: 'plan_complete', title: plan.title, totalPhases: plan.phases.length });
     }
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          status: 'phase_already_complete',
-          phase: targetPhaseNum,
-          phaseName: freshPhase.name,
-          nextPhase: { phase: nextPhase, name: freshPlan.phases.find(p => p.number === nextPhase)?.name },
-        }),
-      }],
-    };
+    return ok({
+      status: 'phase_already_complete',
+      phase: targetPhaseNum,
+      phaseName: freshPhase.name,
+      nextPhase: { phase: nextPhase, name: freshPlan.phases.find(p => p.number === nextPhase)?.name },
+    });
   }
 
   let spec = '';
@@ -507,135 +563,91 @@ async function handlePlanExecute(args: {
     spec = readFileSync(specPath, 'utf-8');
   } catch { /* spec is optional */ }
 
+  // Mark tasks in progress in plan.md
   for (const task of tasks) {
     updateTaskStatus(planPath, task.id, 'in_progress');
   }
 
+  // Ensure coordination server is running
+  const client = await getClient();
   const cwd = process.cwd();
   const startTime = Date.now();
-  const agentPromises: Array<{
-    task: PlanTask;
-    name: string;
-    promise: Promise<{ success: boolean; response?: string; error?: string }>;
-  }> = [];
 
-  for (const task of tasks) {
-    const agentName = `plan-${targetPhaseNum}-${task.id.replace('.', '-')}`;
-    const agentPrompt = buildAgentPrompt(task, spec, freshPhase);
+  // Create tasks on the TaskBoard
+  const coordTasks = await client.createTasks(
+    tasks.map(t => ({
+      id: `${targetPhaseNum}-${t.id}`,
+      description: t.description,
+      phase: targetPhaseNum,
+      prompt: buildAgentPrompt(t, spec, freshPhase),
+    })),
+  );
 
-    const tmuxAgent = spawner.spawn({ name: agentName, prompt: agentPrompt, cwd });
-    tracker.register({
+  const coordTaskIds = coordTasks.map(t => t.id);
+
+  // Spawn agents (one per task)
+  const agentNames: string[] = [];
+  for (let i = 0; i < tasks.length; i++) {
+    const agentName = `plan-${targetPhaseNum}-${tasks[i].id.replace('.', '-')}`;
+    const agentPrompt = buildSpawnPrompt(agentName, 'coder');
+
+    spawner.spawn({
       name: agentName,
-      role: 'coder',
       prompt: agentPrompt,
-      paneId: tmuxAgent.paneId,
-      pid: tmuxAgent.pid,
-    });
-    tracker.updateStatus(agentName, 'running');
-
-    const promise = new Promise<{ success: boolean; response?: string; error?: string }>((resolve) => {
-      const outputFile = TmuxSpawner.outputPath(agentName);
-
-      if (spawner.tmuxAvailable) {
-        tmuxAgent.process.on('close', () => {
-          try {
-            const raw = readFileSync(outputFile, 'utf-8');
-            const events = TmuxSpawner.parseStreamEvents(raw);
-            const response = TmuxSpawner.extractResponse(events);
-            const errorEvent = events.find(e => e.type === 'error');
-
-            if (errorEvent) {
-              tracker.updateStatus(agentName, 'failed', { error: errorEvent.error ?? 'Unknown error', response });
-              resolve({ success: false, error: errorEvent.error ?? 'Unknown error', response });
-            } else if (response) {
-              tracker.updateStatus(agentName, 'completed', { response });
-              resolve({ success: true, response });
-            } else {
-              tracker.updateStatus(agentName, 'failed', { error: 'Agent exited without result' });
-              resolve({ success: false, error: 'Agent exited without result' });
-            }
-          } catch (err) {
-            tracker.updateStatus(agentName, 'failed', { error: `Output read error: ${err}` });
-            resolve({ success: false, error: `Output read error: ${err}` });
-          }
-          try { rmSync(outputFile, { force: true }); } catch { /* ignore */ }
-          spawner.removePaneEntry(agentName);
-        });
-      } else {
-        let stdout = '';
-        tmuxAgent.process.stdout?.on('data', (chunk: Buffer) => {
-          stdout += chunk.toString();
-        });
-        tmuxAgent.process.on('close', () => {
-          const events = TmuxSpawner.parseStreamEvents(stdout);
-          const response = TmuxSpawner.extractResponse(events);
-          const errorEvent = events.find(e => e.type === 'error');
-
-          if (errorEvent) {
-            tracker.updateStatus(agentName, 'failed', { error: errorEvent.error ?? 'Unknown error', response });
-            resolve({ success: false, error: errorEvent.error ?? 'Unknown error', response });
-          } else if (response) {
-            tracker.updateStatus(agentName, 'completed', { response });
-            resolve({ success: true, response });
-          } else {
-            tracker.updateStatus(agentName, 'failed', { error: 'Agent exited without result' });
-            resolve({ success: false, error: 'Agent exited without result' });
-          }
-        });
-      }
-
-      tmuxAgent.process.on('error', (err) => {
-        tracker.updateStatus(agentName, 'failed', { error: err.message });
-        resolve({ success: false, error: err.message });
-      });
+      cwd,
     });
 
-    agentPromises.push({ task, name: agentName, promise });
+    await client.registerAgent(agentName, 'coder');
+    agentNames.push(agentName);
   }
 
   spawner.applyTiledLayout();
 
-  const results = await Promise.all(
-    agentPromises.map(async ({ task, name, promise }) => {
-      const result = await promise;
-      return { taskId: task.id, taskDesc: task.description, agent: name, ...result };
-    })
-  );
+  // Poll for completion
+  let completedTasks: SwarmTask[];
+  try {
+    completedTasks = await waitForTasksComplete(coordTaskIds);
+  } catch {
+    // Timeout — gather whatever state we have
+    completedTasks = await Promise.all(coordTaskIds.map(id => client.getTask(id)));
+  }
 
   const duration = Date.now() - startTime;
 
-  for (const result of results) {
-    if (result.success) {
-      updateTaskStatus(planPath, result.taskId, 'completed');
-    } else {
-      updateTaskStatus(planPath, result.taskId, 'failed');
+  // Update plan.md with results
+  for (let i = 0; i < tasks.length; i++) {
+    const coordTask = completedTasks[i];
+    if (coordTask.status === 'completed') {
+      updateTaskStatus(planPath, tasks[i].id, 'completed', coordTask.sha);
+    } else if (coordTask.status === 'failed') {
+      updateTaskStatus(planPath, tasks[i].id, 'failed');
+    }
+    // If still claimed/open after timeout, mark as failed
+    if (coordTask.status === 'open' || coordTask.status === 'claimed') {
+      updateTaskStatus(planPath, tasks[i].id, 'failed');
     }
   }
 
-  const failed = results.filter(r => !r.success);
-  const completed = results.filter(r => r.success);
+  const failed = completedTasks.filter(t => t.status === 'failed' || t.status === 'open' || t.status === 'claimed');
+  const completed = completedTasks.filter(t => t.status === 'completed');
 
   if (failed.length > 0) {
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          status: 'phase_failed',
-          phase: targetPhaseNum,
-          phaseName: freshPhase.name,
-          completedTasks: completed.map(r => ({
-            task: `Task ${r.taskId}: ${r.taskDesc}`,
-            agent: r.agent,
-          })),
-          failedTasks: failed.map(r => ({
-            task: `Task ${r.taskId}: ${r.taskDesc}`,
-            agent: r.agent,
-            error: r.error,
-          })),
-          duration,
-        }, null, 2),
-      }],
-    };
+    return ok({
+      status: 'phase_failed',
+      phase: targetPhaseNum,
+      phaseName: freshPhase.name,
+      completedTasks: completed.map(t => ({
+        task: t.id,
+        description: t.description,
+        result: t.result,
+      })),
+      failedTasks: failed.map(t => ({
+        task: t.id,
+        description: t.description,
+        error: t.error ?? 'Timed out or unclaimed',
+      })),
+      duration,
+    });
   }
 
   const updatedPlan = parsePlan(readFileSync(planPath, 'utf-8'));
@@ -643,42 +655,33 @@ async function handlePlanExecute(args: {
 
   if (nextPhaseNum !== null) {
     const nextPhase = updatedPlan.phases.find(p => p.number === nextPhaseNum);
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          status: 'phase_complete',
-          phase: targetPhaseNum,
-          phaseName: freshPhase.name,
-          completedTasks: completed.map(r => ({
-            task: `Task ${r.taskId}: ${r.taskDesc}`,
-            agent: r.agent,
-            duration: tracker.getAgent(r.agent)?.durationMs,
-          })),
-          nextPhase: {
-            phase: nextPhaseNum,
-            name: nextPhase?.name,
-            taskCount: nextPhase?.tasks.length,
-          },
-          duration,
-        }, null, 2),
-      }],
-    };
+    return ok({
+      status: 'phase_complete',
+      phase: targetPhaseNum,
+      phaseName: freshPhase.name,
+      completedTasks: completed.map(t => ({
+        task: t.id,
+        description: t.description,
+      })),
+      nextPhase: {
+        phase: nextPhaseNum,
+        name: nextPhase?.name,
+        taskCount: nextPhase?.tasks.length,
+      },
+      duration,
+    });
   }
 
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify({
-        status: 'plan_complete',
-        title: plan.title,
-        totalPhases: plan.phases.length,
-        totalTasks: plan.phases.reduce((sum, p) => sum + p.tasks.length, 0),
-        duration,
-      }, null, 2),
-    }],
-  };
+  return ok({
+    status: 'plan_complete',
+    title: plan.title,
+    totalPhases: plan.phases.length,
+    totalTasks: plan.phases.reduce((sum, p) => sum + p.tasks.length, 0),
+    duration,
+  });
 }
+
+// ─── Prompt builders ───
 
 function buildAgentPrompt(task: PlanTask, spec: string, phase: PlanPhase): string {
   let prompt = `You are working on: ${task.description}\n\n## Context\nThis is Task ${task.id} in Phase "${phase.name}".\n`;
@@ -692,56 +695,25 @@ function buildAgentPrompt(task: PlanTask, spec: string, phase: PlanPhase): strin
   return prompt;
 }
 
-const HEALTH_CHECK_TIMEOUT = 30000; // 30 seconds
-const HEALTH_CHECK_INTERVAL = 10000; // 10 seconds
-
-function startHealthCheckLoop(): void {
-  setInterval(() => {
-    const unresponsive = tracker.checkHealth(HEALTH_CHECK_TIMEOUT);
-    for (const name of unresponsive) {
-      console.warn(`[orchestrator] Agent ${name} is unresponsive (no heartbeat for >${HEALTH_CHECK_TIMEOUT}ms)`);
-    }
-  }, HEALTH_CHECK_INTERVAL);
+function buildSpawnPrompt(agentName: string, role: string): string {
+  return [
+    `You are swarm agent "${agentName}" (role: ${role}).`,
+    '',
+    'Your workflow:',
+    '1. Call swarm_task_list to see available tasks',
+    '2. Call swarm_task_claim to claim a task',
+    '3. Read the task prompt and complete the work',
+    '4. Call swarm_task_complete with your result (or swarm_task_fail if you cannot complete it)',
+    '5. Call swarm_heartbeat periodically during long tasks',
+    '',
+    'Use swarm_send/swarm_receive to communicate with other agents if needed.',
+    'Use swarm_lock/swarm_unlock if you need exclusive access to a shared resource.',
+  ].join('\n');
 }
 
-// --- Start ---
+// ─── Start ───
+
 async function main() {
-  // Start message watcher
-  watcher.on('message', (agentName) => {
-    if (agentName === 'orchestrator') {
-      const messages = messageBus.receive('orchestrator');
-      for (const msg of messages) {
-        if (msg.type === 'heartbeat') {
-          tracker.updateHeartbeat(msg.from);
-        } else {
-          console.error(`[orchestrator] Received ${msg.type} from ${msg.from}: ${JSON.stringify(msg.payload)}`);
-        }
-      }
-    }
-  });
-  watcher.start();
-
-  // Start health check loop
-  startHealthCheckLoop();
-
-  // Re-monitor running agents
-  const runningAgents = tracker.getRunningAgents();
-  if (runningAgents.length > 0) {
-    console.log(`Re-monitoring ${runningAgents.length} running agents...`);
-    for (const agent of runningAgents) {
-      if (agent.paneId && spawner.tmuxAvailable && !agent.paneId.startsWith('bg-')) {
-        spawner.reRegister(agent.name, agent.paneId);
-        const waiter = spawner.getWaiter(agent.name);
-        monitorAgent(agent.name, waiter, true);
-      } else if (agent.pid && !spawner.tmuxAvailable) {
-        // For background processes, we can't easily re-attach stdout,
-        // but we can at least wait for them to finish if they are still alive.
-        // For now, mark them as failed as we can't recover stdout.
-        tracker.updateStatus(agent.name, 'failed', { error: 'Server restarted, background agent lost' });
-      }
-    }
-  }
-
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

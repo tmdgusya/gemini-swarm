@@ -81,7 +81,7 @@ export class TmuxSpawner {
 
     // Run gemini with tee (visible in pane), then signal completion via tmux wait-for
     // The ; chaining ensures wait-for -S runs even if gemini crashes
-    const tmuxCmd = `${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
+    const tmuxCmd = `SWARM_AGENT_NAME=${shellEscape(name)} ${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
     const paneId = execSync(
       `tmux split-window -h -d -P -F "#{pane_id}" -c ${shellEscape(cwd)} ${shellEscape(tmuxCmd)}`,
       { encoding: 'utf-8', stdio: 'pipe' }
@@ -114,6 +114,7 @@ export class TmuxSpawner {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
+      env: { ...process.env, SWARM_AGENT_NAME: name },
     });
     proc.stdin?.end();
 
@@ -198,6 +199,23 @@ export class TmuxSpawner {
       });
     }
     return result;
+  }
+
+  spawnAgent(opts: { name: string; cwd: string; model?: string; extraFlags?: string[] }): TmuxAgent {
+    // Spawn with a minimal bootstrap prompt that tells the agent to check the TaskBoard
+    const bootstrapPrompt = `You are swarm agent "${opts.name}". Check available tasks with swarm_task_list, claim one with swarm_task_claim, execute it, then report with swarm_task_complete or swarm_task_fail. Repeat until no tasks remain, then exit.`;
+    return this.spawn({ ...opts, prompt: bootstrapPrompt });
+  }
+
+  spawnMany(agents: Array<{ name: string; cwd: string; model?: string }>): TmuxAgent[] {
+    const results: TmuxAgent[] = [];
+    for (const opts of agents) {
+      results.push(this.spawnAgent(opts));
+    }
+    if (this.tmuxAvailable) {
+      this.applyTiledLayout();
+    }
+    return results;
   }
 
   applyTiledLayout(): void {

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "test": "tsx --test src/tests/*.test.ts"
+    "test": "tsx --test src/tests/*.test.ts",
+    "start:coord": "node dist/coord-server.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"

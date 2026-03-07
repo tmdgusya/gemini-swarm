@@ -1,22 +1,33 @@
 # Gemini Swarm
 
-Gemini CLI 인스턴스를 병렬 tmux pane으로 스폰하여 스웜 모드로 작동하는 오케스트레이터.
+Gemini CLI 인스턴스를 병렬로 스폰하여 스웜 모드로 작동하는 오케스트레이터. Agent Teams 모델 기반.
 
 ## Architecture
 
-Gemini CLI의 MCP 확장으로 동작. `~/.gemini/extensions/gemini-swarm/` → 이 repo의 symlink.
+Gemini CLI의 MCP 확장으로 동작. HTTP Coordination Server를 통해 모든 에이전트가 상태를 공유한다.
 
 ### 파일 구조
 
 | 파일 | 역할 |
 |------|------|
-| `src/server.ts` | MCP 서버 진입점. 5개 tool handler |
+| `src/coord-server.ts` | HTTP 코디네이션 서버 (TaskBoard, Agent, Message, Lock API) |
+| `src/coord-client.ts` | 코디네이션 서버 HTTP 클라이언트 |
+| `src/types.ts` | 공유 타입 정의 및 REST API 계약 |
+| `src/server.ts` | MCP 서버 (thin client → coord-server에 위임) |
 | `src/tmux-spawner.ts` | tmux pane 생성/관리, `wait-for` 시그널링 |
 | `src/agent-tracker.ts` | 에이전트 상태 추적 (in-memory + file) |
 | `src/message-bus.ts` | JSONL 기반 에이전트 간 메시징 |
-| `commands/swarm/*.toml` | `/swarm:dispatch` 등 슬래시 커맨드 정의 (⚠️ 아래 검증 규칙 참고) |
+| `commands/swarm/*.toml` | `/swarm:plan` 등 슬래시 커맨드 정의 (⚠️ 아래 검증 규칙 참고) |
 | `gemini-extension.json` | 확장 매니페스트 (MCP 서버 설정) |
 | `GEMINI.md` | Gemini에게 주입되는 도구 사용 가이드 |
+
+### Agent Teams 모델
+
+Claude Code의 Agent Teams와 유사한 구조:
+- Orchestrator가 TaskBoard에 태스크 생성
+- 스폰된 에이전트가 자율적으로 태스크를 claim/실행/보고
+- 모든 에이전트가 동일한 MCP extension을 로드 → 동일한 coordination server에 연결
+- 에이전트 신원은 `SWARM_AGENT_NAME` 환경 변수로 전달
 
 ## Code Style
 
@@ -65,6 +76,7 @@ Gemini LLM이 `swarm_status`/`swarm_results`를 반복 호출하면 CLI의 루�
 1. **Tool description에 워크플로우 명시** — "dispatch 후 STOP, 사용자가 물어볼 때만 호출"
 2. **"still running" 응답에 `isError: true`** — LLM이 에러 응답을 재시도하는 경향이 낮음
 3. **텍스트 가이던스만으로는 불충분** — LLM이 무시할 수 있어 구조적 방법 병행
+4. **plan execution 시 폴링은 MCP 서버가 수행** — LLM이 아닌 MCP 서버 내부에서 coord-server를 폴링
 
 ### 출력 파일 경로 관리
 
@@ -80,6 +92,10 @@ Gemini LLM이 `swarm_status`/`swarm_results`를 반복 호출하면 CLI의 루�
 tmux가 없으면 `spawnBackground()`로 일반 child process 실행. 이 경우:
 - stdout을 직접 수집 (파일이 아닌 pipe)
 - `monitorAgent()`의 `useTmux` 파라미터로 분기
+
+### Coordination Server
+
+coord-server는 `node dist/coord-server.js`로 독립 실행. MCP extension이 자동 시작함.
 
 ## 필수 검증: Command TOML 파일
 
