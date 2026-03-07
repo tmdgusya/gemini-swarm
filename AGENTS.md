@@ -14,7 +14,7 @@ Gemini CLI의 MCP 확장으로 동작. `~/.gemini/extensions/gemini-swarm/` → 
 | `src/tmux-spawner.ts` | tmux pane 생성/관리, `wait-for` 시그널링 |
 | `src/agent-tracker.ts` | 에이전트 상태 추적 (in-memory + file) |
 | `src/message-bus.ts` | JSONL 기반 에이전트 간 메시징 |
-| `commands/swarm/*.toml` | `/swarm:dispatch` 등 슬래시 커맨드 정의 |
+| `commands/swarm/*.toml` | `/swarm:dispatch` 등 슬래시 커맨드 정의 (⚠️ 아래 검증 규칙 참고) |
 | `gemini-extension.json` | 확장 매니페스트 (MCP 서버 설정) |
 | `GEMINI.md` | Gemini에게 주입되는 도구 사용 가이드 |
 
@@ -80,6 +80,35 @@ Gemini LLM이 `swarm_status`/`swarm_results`를 반복 호출하면 CLI의 루�
 tmux가 없으면 `spawnBackground()`로 일반 child process 실행. 이 경우:
 - stdout을 직접 수집 (파일이 아닌 pipe)
 - `monitorAgent()`의 `useTmux` 파라미터로 분기
+
+## 필수 검증: Command TOML 파일
+
+`commands/swarm/*.toml` 파일을 추가하거나 수정할 때 **반드시** 검증 테스트를 실행해야 한다:
+
+```bash
+npx tsx --test src/tests/validate-commands.test.ts
+```
+
+### Gemini CLI command .toml 형식 규칙
+
+**올바른 형식** (Gemini CLI 슬래시 커맨드):
+```toml
+description = "명령어 설명"
+prompt = """
+프롬프트 내용. {{args}}로 사용자 입력을 받을 수 있다.
+"""
+```
+
+**잘못된 형식** (MCP 도구 스키마 — server.ts에만 사용):
+```toml
+# ❌ 이 형식은 command .toml에 쓰면 안 됨!
+name = "tool_name"
+inputSchema = { ... }
+```
+
+- `prompt` 필드는 **필수**. 없으면 Gemini CLI가 `FileCommandLoader` 에러를 발생시킨다.
+- `name`, `inputSchema`, `parameters` 필드는 MCP 도구 전용. command .toml에 넣으면 무시되거나 에러 발생.
+- MCP 도구 정의는 `src/server.ts`에, 슬래시 커맨드는 `commands/swarm/*.toml`에 — 혼동하지 말 것.
 
 ## Common Gotchas
 

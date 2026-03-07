@@ -1,18 +1,16 @@
-name = "swarm_lock"
-description = "Acquire a simple lock on a file path to prevent concurrent access by agents."
+description = "Acquire a lock on a file path to prevent concurrent access by agents"
+prompt = """
+The user wants to acquire a file lock. Parse their request: {{args}}
 
-[inputSchema]
-type = "object"
-required = ["path", "agent"]
+Extract:
+1. The file path to lock
+2. The agent name requesting the lock
+3. Optional TTL in milliseconds
 
-[inputSchema.properties.path]
-type = "string"
-description = "File path to lock"
+Then call the `swarm_lock` tool with:
+- path: the file path to lock
+- agent: the agent name requesting the lock
+- ttlMs: the TTL in milliseconds (if provided)
 
-[inputSchema.properties.agent]
-type = "string"
-description = "Agent name requesting the lock"
-
-[inputSchema.properties.ttlMs]
-type = "number"
-description = "Time To Live in milliseconds (optional)"
+Report whether the lock was successfully acquired.
+"""

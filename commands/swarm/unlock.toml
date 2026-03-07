@@ -1,14 +1,14 @@
-name = "swarm_unlock"
-description = "Release a lock on a file path."
+description = "Release a lock on a file path"
+prompt = """
+The user wants to release a file lock. Parse their request: {{args}}
 
-[inputSchema]
-type = "object"
-required = ["path", "agent"]
+Extract:
+1. The file path to unlock
+2. The agent name releasing the lock
 
-[inputSchema.properties.path]
-type = "string"
-description = "File path to unlock"
+Then call the `swarm_unlock` tool with:
+- path: the file path to unlock
+- agent: the agent name releasing the lock
 
-[inputSchema.properties.agent]
-type = "string"
-description = "Agent name releasing the lock"
+Report whether the lock was successfully released.
+"""
