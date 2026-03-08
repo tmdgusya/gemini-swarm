@@ -21433,7 +21433,7 @@ function getAgentName() {
   return process.env["SWARM_AGENT_NAME"] ?? "orchestrator";
 }
 var server = new Server(
-  { name: "gemini-swarm", version: "0.2.0" },
+  { name: "gemini-swarm", version: "0.3.0" },
   { capabilities: { tools: {} } }
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

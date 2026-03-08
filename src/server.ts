@@ -37,7 +37,7 @@ function getAgentName(): string {
 // ─── MCP Server ───
 
 const server = new Server(
-  { name: 'gemini-swarm', version: '0.2.0' },
+  { name: 'gemini-swarm', version: '0.3.0' },
   { capabilities: { tools: {} } },
 );
 
