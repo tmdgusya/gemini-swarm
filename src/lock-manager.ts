@@ -55,10 +55,8 @@ export class LockManager {
           const updatedInfo: LockInfo = {
             ...existingInfo,
             timestamp: new Date().toISOString(),
+            expiresAt: ttlMs ? new Date(Date.now() + ttlMs).toISOString() : undefined,
           };
-          if (ttlMs) {
-            updatedInfo.expiresAt = new Date(Date.now() + ttlMs).toISOString();
-          }
           writeFileSync(lockFilePath, JSON.stringify(updatedInfo));
           return true;
         }
@@ -112,21 +110,16 @@ export class LockManager {
    */
   releaseLock(resourceId: string, owner: string): boolean {
     const lockFilePath = this.getLockFilePath(resourceId);
-    if (!existsSync(lockFilePath)) {
-      return true;
-    }
-
     try {
       const data = readFileSync(lockFilePath, 'utf-8');
       const lockInfo: LockInfo = JSON.parse(data);
-      if (lockInfo.owner === owner) {
-        unlinkSync(lockFilePath);
-        return true;
-      }
-      return false;
-    } catch (err) {
-      // If file was deleted between existsSync and readFileSync, it's already released.
+      if (lockInfo.owner !== owner) return false;
+      unlinkSync(lockFilePath);
       return true;
+    } catch (err: any) {
+      if (err.code === 'ENOENT') return true; // already gone
+      console.error(`[lock-manager] Failed to release lock ${resourceId}: ${err.message}`);
+      return false;
     }
   }
 

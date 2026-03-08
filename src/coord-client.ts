@@ -303,6 +303,9 @@ export async function getOrStartCoordServer(): Promise<CoordClient> {
     detached: true,
     stdio: 'ignore',
   });
+  proc.on('error', (err) => {
+    console.error('[coord-client] Failed to spawn coordination server:', err.message);
+  });
   proc.unref();
 
   // 3. Wait for port file to appear (poll every 100ms, timeout 10s)

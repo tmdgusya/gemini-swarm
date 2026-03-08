@@ -26,6 +26,7 @@ import type {
 const PORT_FILE = COORD_PORT_FILE;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_DEAD_MS = 60_000;
+const MAX_QUEUE_SIZE = 1000;
 
 // ─── State ───
 
@@ -105,6 +106,11 @@ function healthCheckLoop(): void {
 
 // ─── HTTP helpers ───
 
+function corsOrigin(req: IncomingMessage): string {
+  const origin = req.headers.origin;
+  return origin && origin.startsWith('http://localhost') ? origin : 'http://localhost';
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -114,15 +120,26 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+let _currentReq: IncomingMessage | undefined;
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': 'http://localhost',
+    'Access-Control-Allow-Origin': _currentReq ? corsOrigin(_currentReq) : 'http://localhost',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   });
   res.end(payload);
+}
+
+async function parseBody<T>(req: IncomingMessage, res: ServerResponse): Promise<T | null> {
+  try {
+    return JSON.parse(await readBody(req)) as T;
+  } catch {
+    json(res, 400, { error: 'Invalid JSON body' });
+    return null;
+  }
 }
 
 function parseQuery(url: string): URLSearchParams {
@@ -139,6 +156,7 @@ function pathname(url: string): string {
 // ─── Route handlers ───
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  _currentReq = req;
   const method = req.method ?? 'GET';
   const rawUrl = req.url ?? '/';
   const path = pathname(rawUrl);
@@ -146,7 +164,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   // CORS preflight
   if (method === 'OPTIONS') {
-    json(res, 204, '');
+    const headers: Record<string, string> = {
+      'Access-Control-Allow-Origin': corsOrigin(req),
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
+    res.writeHead(204, headers);
+    res.end();
     return;
   }
 
@@ -172,7 +196,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   // POST /tasks — create tasks
   if (method === 'POST' && path === '/tasks') {
-    const body: CreateTasksRequest = JSON.parse(await readBody(req));
+    const body = await parseBody<CreateTasksRequest>(req, res);
+    if (!body) return;
     const now = new Date().toISOString();
     const created: SwarmTask[] = [];
     for (const t of body.tasks) {
@@ -213,7 +238,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // Task by ID routes: /tasks/:id, /tasks/:id/claim, /tasks/:id/complete, /tasks/:id/fail
   const taskMatch = path.match(/^\/tasks\/([^/]+)(\/(?:claim|complete|fail))?$/);
   if (taskMatch) {
-    const taskId = taskMatch[1];
+    const taskId = decodeURIComponent(taskMatch[1]);
     const action = taskMatch[2]; // undefined, /claim, /complete, /fail
 
     // GET /tasks/:id
@@ -232,7 +257,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         json(res, 409, { error: `Task status is '${task.status}', cannot claim` });
         return;
       }
-      const body: ClaimTaskRequest = JSON.parse(await readBody(req));
+      const body = await parseBody<ClaimTaskRequest>(req, res);
+      if (!body) return;
       task.status = 'claimed';
       task.claimedBy = body.agent;
       task.updatedAt = new Date().toISOString();
@@ -245,7 +271,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (method === 'POST' && action === '/complete') {
       const task = tasks.get(taskId);
       if (!task) { json(res, 404, { error: 'Task not found' }); return; }
-      const body: CompleteTaskRequest = JSON.parse(await readBody(req));
+      const body = await parseBody<CompleteTaskRequest>(req, res);
+      if (!body) return;
       task.status = 'completed';
       task.result = body.result;
       task.sha = body.sha;
@@ -259,7 +286,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (method === 'POST' && action === '/fail') {
       const task = tasks.get(taskId);
       if (!task) { json(res, 404, { error: 'Task not found' }); return; }
-      const body: FailTaskRequest = JSON.parse(await readBody(req));
+      const body = await parseBody<FailTaskRequest>(req, res);
+      if (!body) return;
       task.status = 'failed';
       task.error = body.error;
       task.claimedBy = undefined;
@@ -273,7 +301,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // ─── Agents ───
 
   if (method === 'POST' && path === '/agents/register') {
-    const body: RegisterAgentRequest = JSON.parse(await readBody(req));
+    const body = await parseBody<RegisterAgentRequest>(req, res);
+    if (!body) return;
+    if (!body.name || typeof body.name !== 'string' || body.name.trim().length === 0) {
+      json(res, 400, { error: 'Agent name is required' });
+      return;
+    }
     const now = new Date().toISOString();
     const agent: SwarmAgent = {
       name: body.name,
@@ -289,7 +322,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (method === 'POST' && path === '/agents/heartbeat') {
-    const body: HeartbeatRequest = JSON.parse(await readBody(req));
+    const body = await parseBody<HeartbeatRequest>(req, res);
+    if (!body) return;
     const agent = agents.get(body.name);
     if (!agent) { json(res, 404, { error: 'Agent not found' }); return; }
     agent.lastHeartbeatAt = new Date().toISOString();
@@ -309,7 +343,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // ─── Messages ───
 
   if (method === 'POST' && path === '/messages') {
-    const body: SendMessageRequest = JSON.parse(await readBody(req));
+    const body = await parseBody<SendMessageRequest>(req, res);
+    if (!body) return;
     const msg: SwarmMessage = {
       id: `msg-${randomUUID().slice(0, 8)}`,
       from: body.from,
@@ -321,7 +356,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (!messageQueues.has(body.to)) {
       messageQueues.set(body.to, []);
     }
-    messageQueues.get(body.to)!.push(msg);
+    const queue = messageQueues.get(body.to)!;
+    if (queue.length >= MAX_QUEUE_SIZE) {
+      queue.splice(0, queue.length - MAX_QUEUE_SIZE + 1);
+    }
+    queue.push(msg);
     json(res, 200, msg);
     return;
   }
@@ -340,7 +379,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // ─── Locks ───
 
   if (method === 'POST' && path === '/locks') {
-    const body: LockRequest = JSON.parse(await readBody(req));
+    const body = await parseBody<LockRequest>(req, res);
+    if (!body) return;
     const acquired = lockManager.acquireLock(body.resource, body.owner, body.ttlMs);
     if (acquired) {
       json(res, 200, { acquired: true });
@@ -353,7 +393,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const lockMatch = path.match(/^\/locks\/(.+)$/);
   if (method === 'DELETE' && lockMatch) {
     const resource = decodeURIComponent(lockMatch[1]);
-    const body: UnlockRequest = JSON.parse(await readBody(req));
+    const body = await parseBody<UnlockRequest>(req, res);
+    if (!body) return;
     const released = lockManager.releaseLock(resource, body.owner);
     json(res, 200, { released });
     return;
@@ -403,12 +444,16 @@ export function startCoordServer(): Promise<ReturnType<typeof createServer>> {
       writeFileSync(PORT_FILE, String(port), 'utf-8');
       console.error(`[coord] Listening on port ${port}`);
 
-      // Start health check loop
+      // Start health check loop (unref so it doesn't prevent process exit)
       healthInterval = setInterval(healthCheckLoop, HEARTBEAT_INTERVAL_MS);
+      healthInterval.unref();
 
       // Graceful shutdown
       const shutdown = () => {
-        if (healthInterval) clearInterval(healthInterval);
+        if (healthInterval) {
+          clearInterval(healthInterval);
+          healthInterval = undefined;
+        }
         try { unlinkSync(PORT_FILE); } catch { /* ignore */ }
         server.close();
         process.exit(0);

@@ -115,12 +115,23 @@ export class MessageBus {
     const lines = content.split('\n').filter((line) => line.length > 0);
     const newLines = lines.slice(offset);
 
+    const messages: Message[] = [];
+    let corruptLines = 0;
+    for (const line of newLines) {
+      try {
+        messages.push(JSON.parse(line) as Message);
+      } catch {
+        corruptLines++;
+      }
+    }
+    if (corruptLines > 0) {
+      console.error(`[message-bus] Skipped ${corruptLines} invalid JSON lines in inbox for ${agentName}`);
+    }
+
     if (newLines.length > 0) {
       this.offsets.set(agentName, lines.length);
       this.saveOffsets();
     }
-
-    const messages = newLines.map((line) => JSON.parse(line) as Message);
 
     let changed = false;
     for (const msg of messages) {

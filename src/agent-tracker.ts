@@ -88,7 +88,15 @@ export class AgentTracker {
     const agent = this.agents.get(name);
     if (!agent) return;
     agent.status = status;
-    if (extra) Object.assign(agent, extra);
+    if (extra) {
+      const { response, error, pid, paneId } = extra;
+      Object.assign(agent, {
+        ...(response !== undefined && { response }),
+        ...(error !== undefined && { error }),
+        ...(pid !== undefined && { pid }),
+        ...(paneId !== undefined && { paneId }),
+      });
+    }
     if (status === 'completed' || status === 'failed' || status === 'killed') {
       agent.completedAt = new Date().toISOString();
       agent.durationMs = Date.now() - new Date(agent.startedAt).getTime();
@@ -177,10 +185,16 @@ export class AgentTracker {
   getResults(): AgentResult[] {
     if (!existsSync(this.resultsDir)) return [];
     const files = readdirSync(this.resultsDir).filter(f => f.endsWith('.json'));
-    return files.map(f => {
-      const data = readFileSync(join(this.resultsDir, f), 'utf-8');
-      return JSON.parse(data) as AgentResult;
-    });
+    const results: AgentResult[] = [];
+    for (const f of files) {
+      try {
+        const data = readFileSync(join(this.resultsDir, f), 'utf-8');
+        results.push(JSON.parse(data) as AgentResult);
+      } catch {
+        console.error(`[agent-tracker] Failed to read result file: ${f}, skipping`);
+      }
+    }
+    return results;
   }
 
   getResultByTaskId(taskId: string): AgentResult | null {

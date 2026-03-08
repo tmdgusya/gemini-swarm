@@ -64,11 +64,9 @@ var LockManager = class {
         if (existingInfo.owner === owner) {
           const updatedInfo = {
             ...existingInfo,
-            timestamp: (/* @__PURE__ */ new Date()).toISOString()
+            timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+            expiresAt: ttlMs ? new Date(Date.now() + ttlMs).toISOString() : void 0
           };
-          if (ttlMs) {
-            updatedInfo.expiresAt = new Date(Date.now() + ttlMs).toISOString();
-          }
           writeFileSync(lockFilePath, JSON.stringify(updatedInfo));
           return true;
         }
@@ -111,19 +109,16 @@ var LockManager = class {
    */
   releaseLock(resourceId, owner) {
     const lockFilePath = this.getLockFilePath(resourceId);
-    if (!existsSync(lockFilePath)) {
-      return true;
-    }
     try {
       const data = readFileSync(lockFilePath, "utf-8");
       const lockInfo = JSON.parse(data);
-      if (lockInfo.owner === owner) {
-        unlinkSync(lockFilePath);
-        return true;
-      }
-      return false;
-    } catch (err) {
+      if (lockInfo.owner !== owner) return false;
+      unlinkSync(lockFilePath);
       return true;
+    } catch (err) {
+      if (err.code === "ENOENT") return true;
+      console.error(`[lock-manager] Failed to release lock ${resourceId}: ${err.message}`);
+      return false;
     }
   }
   /**
@@ -175,6 +170,7 @@ var LockManager = class {
 var PORT_FILE = COORD_PORT_FILE;
 var HEARTBEAT_INTERVAL_MS = 15e3;
 var HEARTBEAT_DEAD_MS = 6e4;
+var MAX_QUEUE_SIZE = 1e3;
 var tasks = /* @__PURE__ */ new Map();
 var agents = /* @__PURE__ */ new Map();
 var messageQueues = /* @__PURE__ */ new Map();
@@ -235,6 +231,10 @@ function healthCheckLoop() {
     }
   }
 }
+function corsOrigin(req) {
+  const origin = req.headers.origin;
+  return origin && origin.startsWith("http://localhost") ? origin : "http://localhost";
+}
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -243,15 +243,24 @@ function readBody(req) {
     req.on("error", reject);
   });
 }
+var _currentReq;
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "http://localhost",
+    "Access-Control-Allow-Origin": _currentReq ? corsOrigin(_currentReq) : "http://localhost",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type"
   });
   res.end(payload);
+}
+async function parseBody(req, res) {
+  try {
+    return JSON.parse(await readBody(req));
+  } catch {
+    json(res, 400, { error: "Invalid JSON body" });
+    return null;
+  }
 }
 function parseQuery(url) {
   const idx = url.indexOf("?");
@@ -263,12 +272,19 @@ function pathname(url) {
   return idx === -1 ? url : url.slice(0, idx);
 }
 async function handleRequest(req, res) {
+  _currentReq = req;
   const method = req.method ?? "GET";
   const rawUrl = req.url ?? "/";
   const path2 = pathname(rawUrl);
   const query = parseQuery(rawUrl);
   if (method === "OPTIONS") {
-    json(res, 204, "");
+    const headers = {
+      "Access-Control-Allow-Origin": corsOrigin(req),
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type"
+    };
+    res.writeHead(204, headers);
+    res.end();
     return;
   }
   if (method === "GET" && path2 === "/health") {
@@ -288,7 +304,8 @@ async function handleRequest(req, res) {
     return;
   }
   if (method === "POST" && path2 === "/tasks") {
-    const body = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const created = [];
     for (const t of body.tasks) {
@@ -325,7 +342,7 @@ async function handleRequest(req, res) {
   }
   const taskMatch = path2.match(/^\/tasks\/([^/]+)(\/(?:claim|complete|fail))?$/);
   if (taskMatch) {
-    const taskId = taskMatch[1];
+    const taskId = decodeURIComponent(taskMatch[1]);
     const action = taskMatch[2];
     if (method === "GET" && !action) {
       const task = tasks.get(taskId);
@@ -346,7 +363,8 @@ async function handleRequest(req, res) {
         json(res, 409, { error: `Task status is '${task.status}', cannot claim` });
         return;
       }
-      const body = JSON.parse(await readBody(req));
+      const body = await parseBody(req, res);
+      if (!body) return;
       task.status = "claimed";
       task.claimedBy = body.agent;
       task.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -360,7 +378,8 @@ async function handleRequest(req, res) {
         json(res, 404, { error: "Task not found" });
         return;
       }
-      const body = JSON.parse(await readBody(req));
+      const body = await parseBody(req, res);
+      if (!body) return;
       task.status = "completed";
       task.result = body.result;
       task.sha = body.sha;
@@ -375,7 +394,8 @@ async function handleRequest(req, res) {
         json(res, 404, { error: "Task not found" });
         return;
       }
-      const body = JSON.parse(await readBody(req));
+      const body = await parseBody(req, res);
+      if (!body) return;
       task.status = "failed";
       task.error = body.error;
       task.claimedBy = void 0;
@@ -386,7 +406,12 @@ async function handleRequest(req, res) {
     }
   }
   if (method === "POST" && path2 === "/agents/register") {
-    const body = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
+    if (!body.name || typeof body.name !== "string" || body.name.trim().length === 0) {
+      json(res, 400, { error: "Agent name is required" });
+      return;
+    }
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const agent = {
       name: body.name,
@@ -401,7 +426,8 @@ async function handleRequest(req, res) {
     return;
   }
   if (method === "POST" && path2 === "/agents/heartbeat") {
-    const body = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
     const agent = agents.get(body.name);
     if (!agent) {
       json(res, 404, { error: "Agent not found" });
@@ -420,7 +446,8 @@ async function handleRequest(req, res) {
     return;
   }
   if (method === "POST" && path2 === "/messages") {
-    const body = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
     const msg = {
       id: `msg-${randomUUID().slice(0, 8)}`,
       from: body.from,
@@ -432,7 +459,11 @@ async function handleRequest(req, res) {
     if (!messageQueues.has(body.to)) {
       messageQueues.set(body.to, []);
     }
-    messageQueues.get(body.to).push(msg);
+    const queue = messageQueues.get(body.to);
+    if (queue.length >= MAX_QUEUE_SIZE) {
+      queue.splice(0, queue.length - MAX_QUEUE_SIZE + 1);
+    }
+    queue.push(msg);
     json(res, 200, msg);
     return;
   }
@@ -446,7 +477,8 @@ async function handleRequest(req, res) {
     return;
   }
   if (method === "POST" && path2 === "/locks") {
-    const body = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
     const acquired = lockManager.acquireLock(body.resource, body.owner, body.ttlMs);
     if (acquired) {
       json(res, 200, { acquired: true });
@@ -458,7 +490,8 @@ async function handleRequest(req, res) {
   const lockMatch = path2.match(/^\/locks\/(.+)$/);
   if (method === "DELETE" && lockMatch) {
     const resource = decodeURIComponent(lockMatch[1]);
-    const body = JSON.parse(await readBody(req));
+    const body = await parseBody(req, res);
+    if (!body) return;
     const released = lockManager.releaseLock(resource, body.owner);
     json(res, 200, { released });
     return;
@@ -496,8 +529,12 @@ function startCoordServer() {
       writeFileSync2(PORT_FILE, String(port), "utf-8");
       console.error(`[coord] Listening on port ${port}`);
       healthInterval = setInterval(healthCheckLoop, HEARTBEAT_INTERVAL_MS);
+      healthInterval.unref();
       const shutdown = () => {
-        if (healthInterval) clearInterval(healthInterval);
+        if (healthInterval) {
+          clearInterval(healthInterval);
+          healthInterval = void 0;
+        }
         try {
           unlinkSync2(PORT_FILE);
         } catch {

@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 export type PhaseStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
@@ -153,7 +154,9 @@ export function updateTaskStatus(
     }
   }
 
-  writeFileSync(planPath, final.join('\n'));
+  const tmpPath = `${planPath}.${randomUUID().slice(0, 8)}.tmp`;
+  writeFileSync(tmpPath, final.join('\n'));
+  renameSync(tmpPath, planPath);
 }
 
 /**

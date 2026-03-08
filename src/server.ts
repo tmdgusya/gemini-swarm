@@ -327,7 +327,8 @@ async function handleCreateTasks(args: { tasks: Array<{ id: string; description:
 }
 
 async function handleSpawn(args: { count: number; role?: string }) {
-  const count = Math.min(Math.max(args.count, 1), 10);
+  const rawCount = Number(args.count);
+  const count = Math.min(Math.max(Number.isFinite(rawCount) ? rawCount : 1, 1), 10);
   const role = (args.role ?? 'generalist') as AgentRole;
   const cwd = process.cwd();
 

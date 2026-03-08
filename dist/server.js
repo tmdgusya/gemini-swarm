@@ -20809,7 +20809,7 @@ var StdioServerTransport = class {
 
 // src/tmux-spawner.ts
 import { spawn, execSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, createWriteStream } from "node:fs";
 import { join as join2 } from "node:path";
 
 // src/types.ts
@@ -20833,6 +20833,7 @@ var TmuxSpawner = class _TmuxSpawner {
   hasTmux;
   inTmux;
   paneMap = /* @__PURE__ */ new Map();
+  bgProcesses = /* @__PURE__ */ new Map();
   constructor() {
     this.hasTmux = _TmuxSpawner.checkTmux();
     this.inTmux = !!process.env["TMUX"];
@@ -20894,6 +20895,8 @@ var TmuxSpawner = class _TmuxSpawner {
     return { name, paneId, pid, process: waiter };
   }
   spawnBackground(name, args, cwd) {
+    const outputFile = _TmuxSpawner.outputPath(name);
+    writeFileSync(outputFile, "");
     const proc = spawn("gemini", args, {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
@@ -20901,6 +20904,13 @@ var TmuxSpawner = class _TmuxSpawner {
       env: { ...process.env, SWARM_AGENT_NAME: name }
     });
     proc.stdin?.end();
+    const outStream = createWriteStream(outputFile, { flags: "a" });
+    outStream.on("error", (err) => {
+      console.error(`[tmux-spawner] Failed to write to output file for ${name}:`, err.message);
+    });
+    proc.stdout?.pipe(outStream);
+    proc.stderr?.pipe(outStream);
+    this.bgProcesses.set(name, proc);
     return {
       name,
       paneId: `bg-${proc.pid}`,
@@ -20916,6 +20926,15 @@ var TmuxSpawner = class _TmuxSpawner {
       this.paneMap.delete(name);
       return true;
     }
+    const proc = this.bgProcesses.get(name);
+    if (proc?.pid) {
+      try {
+        process.kill(proc.pid);
+      } catch {
+      }
+      this.bgProcesses.delete(name);
+      return true;
+    }
     return false;
   }
   killAll() {
@@ -20927,6 +20946,16 @@ var TmuxSpawner = class _TmuxSpawner {
       }
       this.paneMap.clear();
     }
+    for (const [name, proc] of this.bgProcesses) {
+      if (proc.pid) {
+        try {
+          process.kill(proc.pid);
+        } catch {
+        }
+        killed.push(name);
+      }
+    }
+    this.bgProcesses.clear();
     return killed;
   }
   removePaneEntry(name) {
@@ -21234,6 +21263,9 @@ async function getOrStartCoordServer() {
     detached: true,
     stdio: "ignore"
   });
+  proc.on("error", (err) => {
+    console.error("[coord-client] Failed to spawn coordination server:", err.message);
+  });
   proc.unref();
   const port = await waitForPortFile(portFile, 1e4);
   const client = new CoordClient(`http://localhost:${port}`);
@@ -21245,7 +21277,8 @@ async function getOrStartCoordServer() {
 import { existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
 
 // src/plan-parser.ts
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync3, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 var STATUS_MAP = {
   " ": "pending",
   "~": "in_progress",
@@ -21347,7 +21380,9 @@ function updateTaskStatus(planPath, taskId, status, sha) {
       final.push(line);
     }
   }
-  writeFileSync3(planPath, final.join("\n"));
+  const tmpPath = `${planPath}.${randomUUID().slice(0, 8)}.tmp`;
+  writeFileSync3(tmpPath, final.join("\n"));
+  renameSync(tmpPath, planPath);
 }
 function findNextPendingPhase(plan) {
   for (const phase of plan.phases) {
@@ -21630,7 +21665,8 @@ async function handleCreateTasks(args) {
   return ok({ created: created.length, tasks: created });
 }
 async function handleSpawn(args) {
-  const count = Math.min(Math.max(args.count, 1), 10);
+  const rawCount = Number(args.count);
+  const count = Math.min(Math.max(Number.isFinite(rawCount) ? rawCount : 1, 1), 10);
   const role = args.role ?? "generalist";
   const cwd = process.cwd();
   const client = await getClient();

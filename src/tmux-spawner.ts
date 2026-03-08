@@ -1,5 +1,5 @@
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, createWriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { WORK_DIR } from './types.js';
 
@@ -31,6 +31,7 @@ export class TmuxSpawner {
   private hasTmux: boolean;
   private inTmux: boolean;
   private paneMap: Map<string, string> = new Map();
+  private bgProcesses = new Map<string, ChildProcess>();
 
   constructor() {
     this.hasTmux = TmuxSpawner.checkTmux();
@@ -115,6 +116,8 @@ export class TmuxSpawner {
   }
 
   private spawnBackground(name: string, args: string[], cwd: string): TmuxAgent {
+    const outputFile = TmuxSpawner.outputPath(name);
+    writeFileSync(outputFile, '');
     const proc = spawn('gemini', args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -122,7 +125,14 @@ export class TmuxSpawner {
       env: { ...process.env, SWARM_AGENT_NAME: name },
     });
     proc.stdin?.end();
-
+    // Pipe stdout/stderr to file to prevent buffer blocking
+    const outStream = createWriteStream(outputFile, { flags: 'a' });
+    outStream.on('error', (err) => {
+      console.error(`[tmux-spawner] Failed to write to output file for ${name}:`, err.message);
+    });
+    proc.stdout?.pipe(outStream);
+    proc.stderr?.pipe(outStream);
+    this.bgProcesses.set(name, proc);
     return {
       name,
       paneId: `bg-${proc.pid}`,
@@ -139,6 +149,12 @@ export class TmuxSpawner {
       this.paneMap.delete(name);
       return true;
     }
+    const proc = this.bgProcesses.get(name);
+    if (proc?.pid) {
+      try { process.kill(proc.pid); } catch { /* already dead */ }
+      this.bgProcesses.delete(name);
+      return true;
+    }
     return false;
   }
 
@@ -151,6 +167,13 @@ export class TmuxSpawner {
       }
       this.paneMap.clear();
     }
+    for (const [name, proc] of this.bgProcesses) {
+      if (proc.pid) {
+        try { process.kill(proc.pid); } catch { /* already dead */ }
+        killed.push(name);
+      }
+    }
+    this.bgProcesses.clear();
     return killed;
   }
 

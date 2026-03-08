@@ -1,7 +1,8 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { rmSync, existsSync, mkdirSync } from 'node:fs';
+import { rmSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { LockManager } from '../lock-manager.js';
 
 describe('LockManager', () => {
@@ -109,5 +110,43 @@ describe('LockManager', () => {
     const released = lockManager.releaseLock(resource, 'agent-2');
     assert.strictEqual(released, false, 'Agent 2 should NOT be able to release Agent 1\'s lock');
     assert.strictEqual(lockManager.isLocked(resource), true, 'Should still be locked');
+  });
+
+  test('re-acquire without TTL removes existing expiresAt', () => {
+    const resource = 'ttl-clear-resource';
+    const owner = 'agent-1';
+
+    // First acquire with TTL
+    lockManager.acquireLock(resource, owner, 60000);
+    assert.strictEqual(lockManager.isLocked(resource), true);
+
+    // Re-acquire without TTL
+    const reacquired = lockManager.acquireLock(resource, owner);
+    assert.strictEqual(reacquired, true);
+
+    // Read lock file to verify expiresAt is removed
+    const lockFilePath = join(testDir, createHash('sha256').update(resource).digest('hex') + '.lock');
+    const lockData = JSON.parse(readFileSync(lockFilePath, 'utf-8'));
+    assert.strictEqual(lockData.expiresAt, undefined, 'expiresAt should be undefined after re-acquire without TTL');
+  });
+
+  test('releaseLock returns true for already-deleted lock', () => {
+    const resource = 'phantom-resource';
+    // Never acquired, so no lock file exists
+    const released = lockManager.releaseLock(resource, 'agent-1');
+    assert.strictEqual(released, true, 'Should return true for non-existent lock');
+  });
+
+  test('releaseLock TOCTOU: concurrent delete does not throw', () => {
+    const resource = 'toctou-resource';
+    lockManager.acquireLock(resource, 'agent-1');
+
+    // Manually delete the lock file to simulate concurrent deletion
+    const lockFilePath = join(testDir, createHash('sha256').update(resource).digest('hex') + '.lock');
+    unlinkSync(lockFilePath);
+
+    // releaseLock should handle the missing file gracefully
+    const released = lockManager.releaseLock(resource, 'agent-1');
+    assert.strictEqual(released, true, 'Should handle concurrent deletion gracefully');
   });
 });
