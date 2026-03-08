@@ -1,7 +1,9 @@
 {
   "name": "gemini-swarm",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "description": "Gemini CLI swarm mode extension - orchestrate multiple agents as an autonomous team",
   "contextFileName": "GEMINI.md",
+  "entryPoint": "dist/server.js",
   "mcpServers": {
     "gemini-swarm": {
       "command": "node",
