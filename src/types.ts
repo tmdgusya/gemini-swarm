@@ -1,4 +1,3 @@
-import * as os from 'os';
 import * as path from 'path';
 
 // ─── Shared types for Gemini Swarm coordination protocol ───
@@ -56,6 +55,8 @@ export interface SwarmAgent {
   role: AgentRole;
   status: 'idle' | 'working' | 'done' | 'dead';
   currentTaskId?: string;
+  paneId?: string;
+  pid?: number;
   registeredAt: string;
   lastHeartbeatAt: string;
 }
@@ -63,6 +64,8 @@ export interface SwarmAgent {
 export interface RegisterAgentRequest {
   name: string;
   role?: AgentRole;
+  paneId?: string;
+  pid?: number;
 }
 
 export interface HeartbeatRequest {
@@ -110,19 +113,20 @@ export interface LockInfo {
 
 // ─── Coordination Server ───
 
-function getUsername(): string {
-  try {
-    return os.userInfo().username;
-  } catch {
-    return process.env.USER || process.env.USERNAME || 'default';
+export function getWorkDir(): string {
+  const envVal = process.env['SWARM_WORK_DIR'];
+  if (envVal !== undefined) {
+    const resolved = path.resolve(envVal);
+    return resolved;
   }
+  return path.join(process.cwd(), '.swarm');
 }
 
-const USERNAME = getUsername();
-export const WORK_DIR = path.join(os.tmpdir(), `gemini-swarm-${USERNAME}`);
+export const WORK_DIR = getWorkDir();
 export const COORD_PORT_FILE = path.join(WORK_DIR, 'server.port');
 export const TASKBOARD_FILE = path.join(WORK_DIR, 'taskboard.json');
 export const AGENTS_FILE = path.join(WORK_DIR, 'coord-agents.json');
+export const INBOX_DIR = path.join(WORK_DIR, 'inbox');
 
 export interface CoordHealth {
   status: 'ok';

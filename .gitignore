@@ -13,3 +13,4 @@ dist/message-bus.js
 dist/plan-parser.js
 dist/tmux-spawner.js
 dist/types.js
+.swarm/

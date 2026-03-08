@@ -1,10 +1,10 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, unlinkSync, appendFileSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolve as resolvePath, join } from 'node:path';
 import { LockManager } from './lock-manager.js';
-import { WORK_DIR, COORD_PORT_FILE, TASKBOARD_FILE, AGENTS_FILE } from './types.js';
+import { WORK_DIR, COORD_PORT_FILE, TASKBOARD_FILE, AGENTS_FILE, INBOX_DIR } from './types.js';
 import type {
   SwarmTask,
   CreateTasksRequest,
@@ -79,6 +79,38 @@ function loadAgents(): void {
   } catch {
     // ignore corrupt file
   }
+}
+
+function loadMessages(): void {
+  if (!existsSync(INBOX_DIR)) {
+    mkdirSync(INBOX_DIR, { recursive: true });
+    return;
+  }
+  try {
+    const files = readdirSync(INBOX_DIR).filter(f => f.endsWith('.jsonl'));
+    for (const file of files) {
+      const agentName = file.replace('.jsonl', '');
+      const content = readFileSync(join(INBOX_DIR, file), 'utf-8');
+      const lines = content.split('\n').filter(l => l.trim().length > 0);
+      const queue: SwarmMessage[] = [];
+      for (const line of lines) {
+        try {
+          queue.push(JSON.parse(line));
+        } catch { /* ignore */ }
+      }
+      messageQueues.set(agentName, queue.slice(-MAX_QUEUE_SIZE));
+    }
+  } catch {
+    // ignore corrupt file
+  }
+}
+
+function saveMessage(agentName: string, msg: SwarmMessage): void {
+  if (!existsSync(INBOX_DIR)) {
+    mkdirSync(INBOX_DIR, { recursive: true });
+  }
+  const filePath = join(INBOX_DIR, `${agentName}.jsonl`);
+  appendFileSync(filePath, JSON.stringify(msg) + '\n');
 }
 
 // ─── Health check loop ───
@@ -312,6 +344,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       name: body.name,
       role: body.role ?? 'generalist',
       status: 'idle',
+      paneId: body.paneId,
+      pid: body.pid,
       registeredAt: now,
       lastHeartbeatAt: now,
     };
@@ -361,6 +395,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       queue.splice(0, queue.length - MAX_QUEUE_SIZE + 1);
     }
     queue.push(msg);
+    saveMessage(body.to, msg);
     json(res, 200, msg);
     return;
   }
@@ -409,7 +444,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 export function startCoordServer(): Promise<ReturnType<typeof createServer>> {
   return new Promise((resolve, reject) => {
     try {
-      mkdirSync(WORK_DIR, { recursive: true });
+      mkdirSync(WORK_DIR, { recursive: true, mode: 0o700 });
       const testFile = join(WORK_DIR, '.write-test-server');
       writeFileSync(testFile, 'ok');
       unlinkSync(testFile);
@@ -428,6 +463,7 @@ export function startCoordServer(): Promise<ReturnType<typeof createServer>> {
     // Load persisted state
     loadTasks();
     loadAgents();
+    loadMessages();
 
     const server = createServer(async (req, res) => {
       try {
@@ -441,7 +477,7 @@ export function startCoordServer(): Promise<ReturnType<typeof createServer>> {
     server.listen(0, () => {
       const addr = server.address();
       const port = typeof addr === 'object' && addr ? addr.port : 0;
-      writeFileSync(PORT_FILE, String(port), 'utf-8');
+      writeFileSync(PORT_FILE, `${port}\n${process.pid}`, 'utf-8');
       console.error(`[coord] Listening on port ${port}`);
 
       // Start health check loop (unref so it doesn't prevent process exit)

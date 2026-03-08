@@ -2,7 +2,7 @@ import { createRequire } from 'node:module'; const require = createRequire(impor
 
 // src/coord-server.ts
 import { createServer } from "node:http";
-import { mkdirSync as mkdirSync2, writeFileSync as writeFileSync2, renameSync, readFileSync as readFileSync2, existsSync as existsSync2, unlinkSync as unlinkSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, writeFileSync as writeFileSync2, renameSync, readFileSync as readFileSync2, existsSync as existsSync2, unlinkSync as unlinkSync2, appendFileSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve as resolvePath, join as join3 } from "node:path";
@@ -13,20 +13,20 @@ import { join as join2 } from "node:path";
 import { createHash } from "node:crypto";
 
 // src/types.ts
-import * as os from "os";
 import * as path from "path";
-function getUsername() {
-  try {
-    return os.userInfo().username;
-  } catch {
-    return process.env.USER || process.env.USERNAME || "default";
+function getWorkDir() {
+  const envVal = process.env["SWARM_WORK_DIR"];
+  if (envVal !== void 0) {
+    const resolved = path.resolve(envVal);
+    return resolved;
   }
+  return path.join(process.cwd(), ".swarm");
 }
-var USERNAME = getUsername();
-var WORK_DIR = path.join(os.tmpdir(), `gemini-swarm-${USERNAME}`);
+var WORK_DIR = getWorkDir();
 var COORD_PORT_FILE = path.join(WORK_DIR, "server.port");
 var TASKBOARD_FILE = path.join(WORK_DIR, "taskboard.json");
 var AGENTS_FILE = path.join(WORK_DIR, "coord-agents.json");
+var INBOX_DIR = path.join(WORK_DIR, "inbox");
 
 // src/lock-manager.ts
 var LockManager = class {
@@ -212,6 +212,36 @@ function loadAgents() {
   } catch {
   }
 }
+function loadMessages() {
+  if (!existsSync2(INBOX_DIR)) {
+    mkdirSync2(INBOX_DIR, { recursive: true });
+    return;
+  }
+  try {
+    const files = readdirSync(INBOX_DIR).filter((f) => f.endsWith(".jsonl"));
+    for (const file of files) {
+      const agentName = file.replace(".jsonl", "");
+      const content = readFileSync2(join3(INBOX_DIR, file), "utf-8");
+      const lines = content.split("\n").filter((l) => l.trim().length > 0);
+      const queue = [];
+      for (const line of lines) {
+        try {
+          queue.push(JSON.parse(line));
+        } catch {
+        }
+      }
+      messageQueues.set(agentName, queue.slice(-MAX_QUEUE_SIZE));
+    }
+  } catch {
+  }
+}
+function saveMessage(agentName, msg) {
+  if (!existsSync2(INBOX_DIR)) {
+    mkdirSync2(INBOX_DIR, { recursive: true });
+  }
+  const filePath = join3(INBOX_DIR, `${agentName}.jsonl`);
+  appendFileSync(filePath, JSON.stringify(msg) + "\n");
+}
 function healthCheckLoop() {
   const now = Date.now();
   for (const agent of agents.values()) {
@@ -236,10 +266,10 @@ function corsOrigin(req) {
   return origin && origin.startsWith("http://localhost") ? origin : "http://localhost";
 }
 function readBody(req) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+    req.on("end", () => resolve2(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
 }
@@ -417,6 +447,8 @@ async function handleRequest(req, res) {
       name: body.name,
       role: body.role ?? "generalist",
       status: "idle",
+      paneId: body.paneId,
+      pid: body.pid,
       registeredAt: now,
       lastHeartbeatAt: now
     };
@@ -464,6 +496,7 @@ async function handleRequest(req, res) {
       queue.splice(0, queue.length - MAX_QUEUE_SIZE + 1);
     }
     queue.push(msg);
+    saveMessage(body.to, msg);
     json(res, 200, msg);
     return;
   }
@@ -499,9 +532,9 @@ async function handleRequest(req, res) {
   json(res, 404, { error: "Not found" });
 }
 function startCoordServer() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     try {
-      mkdirSync2(WORK_DIR, { recursive: true });
+      mkdirSync2(WORK_DIR, { recursive: true, mode: 448 });
       const testFile = join3(WORK_DIR, ".write-test-server");
       writeFileSync2(testFile, "ok");
       unlinkSync2(testFile);
@@ -515,6 +548,7 @@ function startCoordServer() {
     startTime = Date.now();
     loadTasks();
     loadAgents();
+    loadMessages();
     const server = createServer(async (req, res) => {
       try {
         await handleRequest(req, res);
@@ -526,7 +560,8 @@ function startCoordServer() {
     server.listen(0, () => {
       const addr = server.address();
       const port = typeof addr === "object" && addr ? addr.port : 0;
-      writeFileSync2(PORT_FILE, String(port), "utf-8");
+      writeFileSync2(PORT_FILE, `${port}
+${process.pid}`, "utf-8");
       console.error(`[coord] Listening on port ${port}`);
       healthInterval = setInterval(healthCheckLoop, HEARTBEAT_INTERVAL_MS);
       healthInterval.unref();
@@ -544,7 +579,7 @@ function startCoordServer() {
       };
       process.on("SIGTERM", shutdown);
       process.on("SIGINT", shutdown);
-      resolve(server);
+      resolve2(server);
     });
   });
 }

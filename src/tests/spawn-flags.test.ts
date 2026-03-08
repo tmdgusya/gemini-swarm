@@ -75,4 +75,20 @@ describe('Gemini CLI flag validation', () => {
       'tmux-spawner.ts must pass SWARM_AGENT_NAME in the env option for background mode'
     );
   });
+
+  test('passes SWARM_WORK_DIR env var to spawned agents', () => {
+    const source = readFileSync(
+      join(import.meta.dirname, '..', 'tmux-spawner.ts'),
+      'utf-8'
+    );
+    assert.match(source, /SWARM_WORK_DIR=/, 'tmux spawn must set SWARM_WORK_DIR');
+  });
+
+  test('passes SWARM_WORK_DIR when spawning coord-server', () => {
+    const source = readFileSync(
+      join(import.meta.dirname, '..', 'coord-client.ts'),
+      'utf-8'
+    );
+    assert.match(source, /SWARM_WORK_DIR/, 'coord-client must pass SWARM_WORK_DIR to coord-server spawn');
+  });
 });

@@ -87,7 +87,7 @@ export class TmuxSpawner {
 
     // Run gemini with tee (visible in pane), then signal completion via tmux wait-for
     // The ; chaining ensures wait-for -S runs even if gemini crashes
-    const tmuxCmd = `SWARM_AGENT_NAME=${shellEscape(name)} ${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
+    const tmuxCmd = `SWARM_WORK_DIR=${shellEscape(WORK_DIR)} SWARM_AGENT_NAME=${shellEscape(name)} ${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
     const paneId = execSync(
       `tmux split-window -h -d -P -F "#{pane_id}" -c ${shellEscape(cwd)} ${shellEscape(tmuxCmd)}`,
       { encoding: 'utf-8', stdio: 'pipe' }
@@ -122,7 +122,7 @@ export class TmuxSpawner {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, SWARM_AGENT_NAME: name },
+      env: { ...process.env, SWARM_AGENT_NAME: name, SWARM_WORK_DIR: WORK_DIR },
     });
     proc.stdin?.end();
     // Pipe stdout/stderr to file to prevent buffer blocking

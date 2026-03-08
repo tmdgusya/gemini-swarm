@@ -2980,7 +2980,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a2 = root.localRefs) === null || _a2 === void 0 ? void 0 : _a2[ref];
         const { schemaId } = this.opts;
@@ -3007,7 +3007,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3582,7 +3582,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3809,7 +3809,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -19565,7 +19565,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -19582,7 +19582,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -19660,7 +19660,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -19921,12 +19921,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -20796,12 +20796,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
@@ -20813,20 +20813,20 @@ import { writeFileSync, mkdirSync, createWriteStream } from "node:fs";
 import { join as join2 } from "node:path";
 
 // src/types.ts
-import * as os from "os";
 import * as path from "path";
-function getUsername() {
-  try {
-    return os.userInfo().username;
-  } catch {
-    return process.env.USER || process.env.USERNAME || "default";
+function getWorkDir() {
+  const envVal = process.env["SWARM_WORK_DIR"];
+  if (envVal !== void 0) {
+    const resolved = path.resolve(envVal);
+    return resolved;
   }
+  return path.join(process.cwd(), ".swarm");
 }
-var USERNAME = getUsername();
-var WORK_DIR = path.join(os.tmpdir(), `gemini-swarm-${USERNAME}`);
+var WORK_DIR = getWorkDir();
 var COORD_PORT_FILE = path.join(WORK_DIR, "server.port");
 var TASKBOARD_FILE = path.join(WORK_DIR, "taskboard.json");
 var AGENTS_FILE = path.join(WORK_DIR, "coord-agents.json");
+var INBOX_DIR = path.join(WORK_DIR, "inbox");
 
 // src/tmux-spawner.ts
 var TmuxSpawner = class _TmuxSpawner {
@@ -20874,7 +20874,7 @@ var TmuxSpawner = class _TmuxSpawner {
     const channel = this.channelName(name);
     mkdirSync(WORK_DIR, { recursive: true });
     writeFileSync(outputFile, "");
-    const tmuxCmd = `SWARM_AGENT_NAME=${shellEscape(name)} ${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
+    const tmuxCmd = `SWARM_WORK_DIR=${shellEscape(WORK_DIR)} SWARM_AGENT_NAME=${shellEscape(name)} ${geminiCmd} 2>&1 | tee ${shellEscape(outputFile)}; tmux wait-for -S ${shellEscape(channel)}`;
     const paneId = execSync(
       `tmux split-window -h -d -P -F "#{pane_id}" -c ${shellEscape(cwd)} ${shellEscape(tmuxCmd)}`,
       { encoding: "utf-8", stdio: "pipe" }
@@ -20901,7 +20901,7 @@ var TmuxSpawner = class _TmuxSpawner {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
-      env: { ...process.env, SWARM_AGENT_NAME: name }
+      env: { ...process.env, SWARM_AGENT_NAME: name, SWARM_WORK_DIR: WORK_DIR }
     });
     proc.stdin?.end();
     const outStream = createWriteStream(outputFile, { flags: "a" });
@@ -21172,8 +21172,8 @@ var CoordClient = class {
     );
   }
   // ─── Agents ───
-  async registerAgent(name, role) {
-    return this.request("POST", "/agents/register", { name, role });
+  async registerAgent(name, role, paneId, pid) {
+    return this.request("POST", "/agents/register", { name, role, paneId, pid });
   }
   async heartbeat(name) {
     await this.request("POST", "/agents/heartbeat", { name });
@@ -21224,10 +21224,13 @@ async function waitForPortFile(portFile, timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (existsSync(portFile)) {
-      const port = readFileSync(portFile, "utf-8").trim();
-      if (port) return port;
+      const content = readFileSync(portFile, "utf-8").trim();
+      const port = content.split("\n")[0]?.trim();
+      if (port && /^\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) <= 65535) {
+        return port;
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve2) => setTimeout(resolve2, 100));
   }
   throw new Error(
     `Coordination server did not write port file within ${timeoutMs}ms`
@@ -21236,13 +21239,32 @@ async function waitForPortFile(portFile, timeoutMs) {
 async function getOrStartCoordServer() {
   const portFile = COORD_PORT_FILE;
   if (existsSync(portFile)) {
-    const port2 = readFileSync(portFile, "utf-8").trim();
-    const client2 = new CoordClient(`http://localhost:${port2}`);
-    try {
-      await client2.health();
-      return client2;
-    } catch {
+    const content = readFileSync(portFile, "utf-8").trim();
+    const lines = content.split("\n");
+    const port2 = lines[0]?.trim();
+    const pid = lines[1]?.trim();
+    if (!port2 || !/^\d{1,5}$/.test(port2) || Number(port2) <= 0 || Number(port2) > 65535) {
       unlinkSync(portFile);
+    } else {
+      let pidAlive = true;
+      if (pid && /^\d+$/.test(pid)) {
+        try {
+          process.kill(Number(pid), 0);
+        } catch {
+          pidAlive = false;
+        }
+      }
+      if (!pidAlive) {
+        unlinkSync(portFile);
+      } else {
+        const client2 = new CoordClient(`http://localhost:${port2}`);
+        try {
+          await client2.health();
+          return client2;
+        } catch {
+          unlinkSync(portFile);
+        }
+      }
     }
   }
   const serverPath = join3(
@@ -21250,7 +21272,7 @@ async function getOrStartCoordServer() {
     "coord-server.js"
   );
   try {
-    mkdirSync2(WORK_DIR, { recursive: true });
+    mkdirSync2(WORK_DIR, { recursive: true, mode: 448 });
     const testFile = join3(WORK_DIR, ".write-test");
     writeFileSync2(testFile, "ok");
     unlinkSync(testFile);
@@ -21261,7 +21283,8 @@ async function getOrStartCoordServer() {
   }
   const proc = spawn2(process.execPath, [serverPath], {
     detached: true,
-    stdio: "ignore"
+    stdio: "ignore",
+    env: { ...process.env, SWARM_WORK_DIR: WORK_DIR }
   });
   proc.on("error", (err) => {
     console.error("[coord-client] Failed to spawn coordination server:", err.message);
@@ -21399,6 +21422,7 @@ function getPendingTasks(phase) {
 // src/server.ts
 var spawner = new TmuxSpawner();
 var coordClient = null;
+var messageOffset = 0;
 async function getClient() {
   if (!coordClient) {
     coordClient = await getOrStartCoordServer();
@@ -21679,7 +21703,7 @@ async function handleSpawn(args) {
       prompt: agentPrompt,
       cwd
     });
-    await client.registerAgent(agentName, role);
+    await client.registerAgent(agentName, role, tmuxAgent.paneId, tmuxAgent.pid);
     agents.push({ name: agentName, paneId: tmuxAgent.paneId });
   }
   spawner.applyTiledLayout();
@@ -21761,7 +21785,8 @@ async function handleSend(args) {
 async function handleReceive() {
   const client = await getClient();
   const agentName = getAgentName();
-  const result = await client.receiveMessages(agentName);
+  const result = await client.receiveMessages(agentName, messageOffset);
+  messageOffset = result.nextOffset;
   return ok(result);
 }
 async function handleLock(args) {
@@ -21864,12 +21889,12 @@ async function handlePlanExecute(args) {
   for (let i = 0; i < tasks.length; i++) {
     const agentName = `plan-${targetPhaseNum}-${tasks[i].id.replace(".", "-")}`;
     const agentPrompt = buildSpawnPrompt(agentName, "coder");
-    spawner.spawn({
+    const tmuxAgent = spawner.spawn({
       name: agentName,
       prompt: agentPrompt,
       cwd
     });
-    await client.registerAgent(agentName, "coder");
+    await client.registerAgent(agentName, "coder", tmuxAgent.paneId, tmuxAgent.pid);
     agentNames.push(agentName);
   }
   spawner.applyTiledLayout();

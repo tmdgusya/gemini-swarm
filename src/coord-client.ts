@@ -173,8 +173,10 @@ export class CoordClient {
   async registerAgent(
     name: string,
     role?: AgentRole,
+    paneId?: string,
+    pid?: number,
   ): Promise<SwarmAgent> {
-    return this.request<SwarmAgent>('POST', '/agents/register', { name, role });
+    return this.request<SwarmAgent>('POST', '/agents/register', { name, role, paneId, pid });
   }
 
   async heartbeat(name: string): Promise<void> {
@@ -253,8 +255,11 @@ async function waitForPortFile(
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (existsSync(portFile)) {
-      const port = readFileSync(portFile, 'utf-8').trim();
-      if (port) return port;
+      const content = readFileSync(portFile, 'utf-8').trim();
+      const port = content.split('\n')[0]?.trim();
+      if (port && /^\d{1,5}$/.test(port) && Number(port) > 0 && Number(port) <= 65535) {
+        return port;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -268,14 +273,38 @@ export async function getOrStartCoordServer(): Promise<CoordClient> {
 
   // 1. Check if port file exists and server is alive
   if (existsSync(portFile)) {
-    const port = readFileSync(portFile, 'utf-8').trim();
-    const client = new CoordClient(`http://localhost:${port}`);
-    try {
-      await client.health();
-      return client; // Server is alive
-    } catch {
-      // Server is dead, clean up and start new one
+    const content = readFileSync(portFile, 'utf-8').trim();
+    const lines = content.split('\n');
+    const port = lines[0]?.trim();
+    const pid = lines[1]?.trim();
+
+    // Validate port format
+    if (!port || !/^\d{1,5}$/.test(port) || Number(port) <= 0 || Number(port) > 65535) {
       unlinkSync(portFile);
+    } else {
+      // Check if the PID is still alive (if recorded)
+      let pidAlive = true;
+      if (pid && /^\d+$/.test(pid)) {
+        try {
+          process.kill(Number(pid), 0); // signal 0 = check existence
+        } catch {
+          pidAlive = false;
+        }
+      }
+
+      if (!pidAlive) {
+        // PID is dead, clean up stale port file
+        unlinkSync(portFile);
+      } else {
+        const client = new CoordClient(`http://localhost:${port}`);
+        try {
+          await client.health();
+          return client; // Server is alive
+        } catch {
+          // Server is dead, clean up and start new one
+          unlinkSync(portFile);
+        }
+      }
     }
   }
 
@@ -287,7 +316,7 @@ export async function getOrStartCoordServer(): Promise<CoordClient> {
 
   // Ensure the work directory exists and is writable before spawning
   try {
-    mkdirSync(WORK_DIR, { recursive: true });
+    mkdirSync(WORK_DIR, { recursive: true, mode: 0o700 });
     const testFile = join(WORK_DIR, '.write-test');
     writeFileSync(testFile, 'ok');
     unlinkSync(testFile);
@@ -302,6 +331,7 @@ export async function getOrStartCoordServer(): Promise<CoordClient> {
   const proc = spawn(process.execPath, [serverPath], {
     detached: true,
     stdio: 'ignore',
+    env: { ...process.env, SWARM_WORK_DIR: WORK_DIR },
   });
   proc.on('error', (err) => {
     console.error('[coord-client] Failed to spawn coordination server:', err.message);

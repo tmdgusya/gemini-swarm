@@ -21,6 +21,7 @@ import type { SwarmTask, AgentRole } from './types.js';
 
 const spawner = new TmuxSpawner();
 let coordClient: CoordClient | null = null;
+let messageOffset = 0;
 
 async function getClient(): Promise<CoordClient> {
   if (!coordClient) {
@@ -348,7 +349,7 @@ async function handleSpawn(args: { count: number; role?: string }) {
     });
 
     // Register agent with coordination server
-    await client.registerAgent(agentName, role);
+    await client.registerAgent(agentName, role, tmuxAgent.paneId, tmuxAgent.pid);
 
     agents.push({ name: agentName, paneId: tmuxAgent.paneId });
   }
@@ -454,7 +455,8 @@ async function handleSend(args: { to: string; message: string }) {
 async function handleReceive() {
   const client = await getClient();
   const agentName = getAgentName();
-  const result = await client.receiveMessages(agentName);
+  const result = await client.receiveMessages(agentName, messageOffset);
+  messageOffset = result.nextOffset;
   return ok(result);
 }
 
@@ -592,13 +594,13 @@ async function handlePlanExecute(args: {
     const agentName = `plan-${targetPhaseNum}-${tasks[i].id.replace('.', '-')}`;
     const agentPrompt = buildSpawnPrompt(agentName, 'coder');
 
-    spawner.spawn({
+    const tmuxAgent = spawner.spawn({
       name: agentName,
       prompt: agentPrompt,
       cwd,
     });
 
-    await client.registerAgent(agentName, 'coder');
+    await client.registerAgent(agentName, 'coder', tmuxAgent.paneId, tmuxAgent.pid);
     agentNames.push(agentName);
   }
 
