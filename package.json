@@ -1,6 +1,6 @@
 {
   "name": "gemini-swarm",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Gemini CLI swarm mode extension — tmux + JSONL based",
   "type": "module",
   "scripts": {
