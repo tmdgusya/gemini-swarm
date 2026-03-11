@@ -8,13 +8,45 @@ Follow this process strictly:
 
 ---
 
-## Step 1: Clarify Requirements
+## Step 1: Clarify Requirements & Measure Ambiguity
 
-Ask clarifying questions to fully understand the task. Rules:
+Ask clarifying questions using the `ask_user` tool to fully understand the task.
+You MUST track and calculate the "Ambiguity Score" after every round (1 question + 1 answer).
+
+### 1. Determine Project Type
+
+Based on `{{args}}` and workspace context, determine if this is:
+- **Brownfield** (refactor, fix, extend existing code). Uses 4 dimensions.
+  `ambiguity = 1 - (Goal*0.35 + Constraints*0.25 + Criteria*0.25 + Context*0.15)`
+- **Greenfield** (building from scratch). Uses 3 dimensions.
+  `ambiguity = 1 - (Goal*0.40 + Constraints*0.30 + Criteria*0.30)`
+
+### 2. Scoring & Question Loop
+
+After each user answer, score every dimension from 0.0 to 1.0:
+- **Goal:** How clear is the core objective?
+- **Constraints:** Are technical limits, timeline, and compatibility clear?
+- **Criteria:** Are success/acceptance criteria specific and testable?
+- **Context:** (Brownfield only) Do we understand the existing codebase?
+
+Then you MUST output the explicit calculation and status line:
+```
+Calculation: 1 - (0.8*0.4 + 0.7*0.3 + 0.6*0.3) = 0.29
+📊 Ambiguity: 29% → target ≤20% | Weakest: Constraints (0.7) | Round 2/10
+```
+
+Target your NEXT question specifically at the **weakest dimension**. Rules:
 - Ask **ONE question at a time** using the `ask_user` tool
-- Prefer **multiple choice** questions when possible
-- Ask 2-5 questions total (fewer for simple tasks, more for complex ones)
-- Focus on: scope, constraints, dependencies, existing code context
+- Prefer **multiple-choice** questions when possible
+- Make questions specific and actionable, not generic
+
+### 3. Exit Conditions
+
+- **Ambiguity ≤ 20% AND all dimensions ≥ 0.6** → proceed to Step 2
+- **Round ≥ 7 AND Ambiguity ≤ 40%** → ask the user: "Clarity is acceptable. Continue refining or proceed to spec?"
+- **Round = 10** → force proceed to Step 2 with current scores
+- **2 consecutive rounds with no score change (±0.05)** → acknowledge stall, suggest proceeding
+- **User says "skip" or "just go"** → immediately proceed to Step 2 with current scores
 
 ## Step 2: Generate Spec
 
